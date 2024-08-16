@@ -1,1 +1,8 @@
 /target
+
+# Data
+*.json
+*.txt
+*.log
+*.fvecs
+*.ivecs
