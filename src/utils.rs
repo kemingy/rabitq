@@ -15,7 +15,15 @@ pub fn gen_random_orthogonal(dim: usize) -> DMatrix<f32> {
     random.unwrap()
 }
 
-pub fn gen_random_vector(dim: usize) -> DVector<f32> {
+pub fn gen_identity_matrix(dim: usize) -> DMatrix<f32> {
+    DMatrix::identity(dim, dim)
+}
+
+pub fn gen_fixed_bias(dim: usize) -> DVector<f32> {
+    DVector::from_element(dim, 0.5)
+}
+
+pub fn gen_random_bias(dim: usize) -> DVector<f32> {
     let mut rng = thread_rng();
     DVector::from_fn(dim, |_, _| rng.gen())
 }

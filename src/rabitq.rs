@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use std::path::Path;
 
-use crate::utils::{gen_random_orthogonal, gen_random_vector, matrix_from_fvecs};
+use crate::utils::{
+    gen_fixed_bias, gen_identity_matrix, gen_random_bias, gen_random_orthogonal, matrix_from_fvecs,
+};
 
 const DEFAULT_X_DOT_PRODUCT: f32 = 0.8;
 const EPSILON: f32 = 1.9;
@@ -15,7 +17,7 @@ fn vector_binarize_u64(vec: &DVector<f32>) -> Vec<u64> {
     let mut binary = vec![0u64; (vec.len() + 63) / 64];
     for (i, &v) in vec.iter().enumerate() {
         if v > 0.0 {
-            binary[i / 64] |= 1 << (i % 64);
+            binary[i / 64] |= 1 << (63 - i % 64);
         }
     }
     binary
@@ -29,12 +31,12 @@ fn vector_binarize_one(vec: &DVector<f32>) -> DVector<f32> {
     binary
 }
 
-fn vector_binarize_query(vec: &[u8]) -> Vec<u64> {
+fn query_vector_binarize(vec: &DVector<u8>) -> Vec<u64> {
     let length = vec.len();
     let mut binary = vec![0u64; length * THETA_LOG_DIM as usize / 64];
     for j in 0..THETA_LOG_DIM as usize {
         for i in 0..length {
-            binary[(i + j * length) / 64] |= (((vec[i] >> j) & 1) as u64) << (i % 64);
+            binary[(i + j * length) / 64] |= (((vec[i] >> j) & 1) as u64) << (63 - i % 64);
         }
     }
     binary
@@ -67,7 +69,8 @@ pub struct RaBitQ {
     orthogonal: DMatrix<f32>,
     rand_bias: DVector<f32>,
     centroids: DMatrix<f32>,
-    labels: Vec<Vec<u32>>,
+    offsets: Vec<u32>,
+    map_ids: Vec<u32>,
     x_binary_vec: Vec<Vec<u64>>,
     x_c_distance_square: Vec<f32>,
     error_bound: Vec<f32>,
@@ -82,8 +85,8 @@ impl RaBitQ {
         let centroids = matrix_from_fvecs(centroid_path);
         let k = centroids.shape().0;
         println!("n: {}, dim: {}, k: {}", n, dim, k);
-        let orthogonal = gen_random_orthogonal(dim);
-        let rand_bias = gen_random_vector(dim);
+        let orthogonal = gen_identity_matrix(dim);
+        let rand_bias = gen_fixed_bias(dim);
 
         // projection
         println!("projection x & c...");
@@ -147,17 +150,44 @@ impl RaBitQ {
         }
 
         // sort by labels
+        println!("sort by labels...");
         let mut offsets = vec![0; k + 1];
         for i in 0..k {
-            offsets[i + 1] = offsets[i] + labels[i].len();
+            offsets[i + 1] = offsets[i] + labels[i].len() as u32;
         }
+        let flat_labels: Vec<u32> = labels.into_iter().flatten().collect();
+        let base = DMatrix::from_row_iterator(
+            base.nrows(),
+            base.ncols(),
+            flat_labels
+                .iter()
+                .flat_map(|i| base.row(*i as usize).iter().cloned().collect::<Vec<f32>>()),
+        );
+        let x_binary_vec = flat_labels
+            .iter()
+            .map(|i| x_binary_vec[*i as usize].clone())
+            .collect();
+        let x_c_distance_square = flat_labels
+            .iter()
+            .map(|i| x_c_distance_square[*i as usize])
+            .collect();
+        let error_bound = flat_labels
+            .iter()
+            .map(|i| error_bound[*i as usize])
+            .collect();
+        let factor_ip = flat_labels.iter().map(|i| factor_ip[*i as usize]).collect();
+        let factor_ppc = flat_labels
+            .iter()
+            .map(|i| factor_ppc[*i as usize])
+            .collect();
 
         Self {
             dim,
             base: base.transpose(),
             orthogonal,
             rand_bias,
-            labels,
+            offsets,
+            map_ids: flat_labels,
             centroids,
             x_binary_vec,
             x_c_distance_square,
@@ -176,26 +206,22 @@ impl RaBitQ {
             lists.push((dist, i));
         }
         let length = probe.min(k);
-        lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
-        lists.truncate(probe);
+        lists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        // lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
 
         let mut rough_distances = Vec::new();
-        for &(dist, i) in lists.iter() {
+        for &(dist, i) in lists[..length].iter() {
             let residual = &y_projected - self.centroids.column(i);
             let lower_bound = residual.min();
             let upper_bound = residual.max();
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
             let one_over_delta = 1.0 / delta;
-            let mut scalar_sum = 0u32;
-            let mut y_quantized = vec![0u8; self.dim];
-            for j in 0..self.dim {
-                y_quantized[j] = ((residual[j] - lower_bound) * one_over_delta + self.rand_bias[j])
-                    .to_u8()
-                    .expect("convert to u8 error");
-                scalar_sum += y_quantized[j] as u32;
-            }
-            let y_binary_vec = vector_binarize_query(&y_quantized);
-            for &j in self.labels[i].iter() {
+            let y_scaled = residual.add_scalar(-lower_bound) * one_over_delta + &self.rand_bias;
+            let y_quantized = y_scaled.map(|v| v.to_u8().expect("convert to u8 error"));
+            let scalar_sum = y_quantized.iter().fold(0u32, |acc, &v| acc + v as u32);
+            let y_binary_vec = query_vector_binarize(&y_quantized);
+            let dist_sqrt = dist.sqrt();
+            for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
                 rough_distances.push((
                     (self.x_c_distance_square[ju]
@@ -207,8 +233,8 @@ impl RaBitQ {
                             - scalar_sum as f32)
                             * self.factor_ip[ju]
                             * delta
-                        - self.error_bound[ju] * dist.sqrt()),
-                    j,
+                        - self.error_bound[ju] * dist_sqrt),
+                    self.map_ids[ju],
                 ));
             }
         }
@@ -242,9 +268,14 @@ impl RaBitQ {
             }
         }
 
+        // for &(_, u) in rough_distances.iter() {
+        //     let accurate = self.base.column(u as usize).dot(query);
+        //     res.push((accurate, u as i32));
+        // }
+
         let length = topk.min(res.len());
+        // res.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
-        res.truncate(topk);
-        res.iter().map(|(_, u)| *u).collect()
+        res[..length].iter().map(|(_, u)| *u).collect()
     }
 }

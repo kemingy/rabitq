@@ -1,11 +1,10 @@
 use argh::FromArgs;
 
+use std::fs::{read, write};
 use std::path::Path;
 use std::time::Instant;
-use std::fs::{read, write};
 
 use rabitq::{calculate_recall, dvector_from_vec, read_vecs, RaBitQ};
-
 
 #[derive(FromArgs, Debug)]
 /// RaBitQ
@@ -64,9 +63,14 @@ fn main() {
         let query_vec = dvector_from_vec(query.clone());
         let start_time = Instant::now();
         let res = rabitq.query_one(&query_vec, args.probe, args.topk);
+        // println!("{:?}", res);
         total_time += start_time.elapsed().as_secs_f64();
         recall += calculate_recall(&truth[i], &res, args.topk);
     }
 
-    println!("QPS: {}, recall: {}", queries.len() as f64 / total_time, recall / queries.len() as f32);
+    println!(
+        "QPS: {}, recall: {}",
+        queries.len() as f64 / total_time,
+        recall / queries.len() as f32
+    );
 }
