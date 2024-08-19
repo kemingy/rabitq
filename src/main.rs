@@ -1,8 +1,11 @@
 use argh::FromArgs;
+use log::{info, debug};
+use env_logger::Env;
 
 use std::fs::{read, write};
 use std::path::Path;
 use std::time::Instant;
+
 
 use rabitq::{calculate_recall, dvector_from_vec, read_vecs, RaBitQ};
 
@@ -30,23 +33,27 @@ struct Args {
 }
 
 fn main() {
+    let env = Env::default().filter_or("RABITQ_LOG", "info");
+    env_logger::init_from_env(env);
+
     let args: Args = argh::from_env();
-    println!("{:?}", args);
+    debug!("{:?}", args);
     let base_path = Path::new(args.base.as_str());
     let centroids_path = Path::new(args.centroids.as_str());
     let query_path = Path::new(args.query.as_str());
     let truth_path = Path::new(args.truth.as_str());
 
-    let local_path = Path::new("rabitq.json");
+    let file_name = format!("{}-{}", base_path.file_stem().unwrap().to_str().unwrap(), "rabitq.json");
+    let local_path = Path::new(&file_name);
     let rabitq: RaBitQ;
     if local_path.is_file() {
-        println!("loading from local...");
+        debug!("loading from {:?}...", local_path);
         rabitq = serde_json::from_slice(&read(&local_path).expect("open json error"))
             .expect("deserialize error");
     } else {
-        println!("training...");
+        debug!("training...");
         rabitq = RaBitQ::from_path(&base_path, &centroids_path);
-        println!("saving to local...");
+        debug!("saving to local file: {:?}", local_path);
         write(
             local_path,
             serde_json::to_string(&rabitq).expect("serialize error"),
@@ -56,19 +63,18 @@ fn main() {
 
     let queries = read_vecs::<f32>(&query_path).expect("read query error");
     let truth = read_vecs::<i32>(&truth_path).expect("read truth error");
-    println!("querying...");
+    debug!("querying...");
     let mut total_time = 0.0;
     let mut recall = 0.0;
     for (i, query) in queries.iter().enumerate() {
         let query_vec = dvector_from_vec(query.clone());
         let start_time = Instant::now();
         let res = rabitq.query_one(&query_vec, args.probe, args.topk);
-        // println!("{:?}", res);
         total_time += start_time.elapsed().as_secs_f64();
         recall += calculate_recall(&truth[i], &res, args.topk);
     }
 
-    println!(
+    info!(
         "QPS: {}, recall: {}",
         queries.len() as f64 / total_time,
         recall / queries.len() as f32

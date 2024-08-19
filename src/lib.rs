@@ -1,3 +1,6 @@
+//! RaBitQ implementation in Rust.
+
+#![forbid(missing_docs)]
 pub mod rabitq;
 pub mod utils;
 
