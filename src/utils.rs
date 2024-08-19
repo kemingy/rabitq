@@ -19,14 +19,14 @@ pub fn gen_random_orthogonal(dim: usize) -> DMatrix<f32> {
 }
 
 /// Generate an identity matrix as a special orthogonal matrix.
-/// 
+///
 /// Use this function to debug the logic.
 pub fn gen_identity_matrix(dim: usize) -> DMatrix<f32> {
     DMatrix::identity(dim, dim)
 }
 
 /// Generate a fixed bias vector.
-/// 
+///
 /// Use this function to debug the logic.
 pub fn gen_fixed_bias(dim: usize) -> DVector<f32> {
     DVector::from_element(dim, 0.5)
@@ -48,8 +48,7 @@ pub fn matrix_from_fvecs(path: &Path) -> DMatrix<f32> {
     let vecs = read_vecs::<f32>(path).expect("read vecs error");
     let dim = vecs[0].len();
     let rows = vecs.len();
-    let matrix = DMatrix::from_row_iterator(rows, dim, vecs.into_iter().flatten());
-    matrix
+    DMatrix::from_row_iterator(rows, dim, vecs.into_iter().flatten())
 }
 
 /// Read the fvces/ivces file.
@@ -82,9 +81,9 @@ where
 pub fn calculate_recall(truth: &[i32], res: &[i32], topk: usize) -> f32 {
     let mut count = 0;
     let length = min(topk, truth.len());
-    for i in 0..length {
-        for j in 0..min(length, res.len()) {
-            if res[j] == truth[i] {
+    for t in truth.iter().take(length) {
+        for y in res.iter().take(length.min(res.len())) {
+            if *t == *y {
                 count += 1;
                 break;
             }

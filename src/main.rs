@@ -1,12 +1,10 @@
-use argh::FromArgs;
-use log::{info, debug};
-use env_logger::Env;
-
 use std::fs::{read, write};
 use std::path::Path;
 use std::time::Instant;
 
-
+use argh::FromArgs;
+use env_logger::Env;
+use log::{debug, info};
 use rabitq::{calculate_recall, dvector_from_vec, read_vecs, RaBitQ};
 
 #[derive(FromArgs, Debug)]
@@ -43,16 +41,20 @@ fn main() {
     let query_path = Path::new(args.query.as_str());
     let truth_path = Path::new(args.truth.as_str());
 
-    let file_name = format!("{}-{}", base_path.file_stem().unwrap().to_str().unwrap(), "rabitq.json");
+    let file_name = format!(
+        "{}-{}",
+        base_path.file_stem().unwrap().to_str().unwrap(),
+        "rabitq.json"
+    );
     let local_path = Path::new(&file_name);
     let rabitq: RaBitQ;
     if local_path.is_file() {
         debug!("loading from {:?}...", local_path);
-        rabitq = serde_json::from_slice(&read(&local_path).expect("open json error"))
+        rabitq = serde_json::from_slice(&read(local_path).expect("open json error"))
             .expect("deserialize error");
     } else {
         debug!("training...");
-        rabitq = RaBitQ::from_path(&base_path, &centroids_path);
+        rabitq = RaBitQ::from_path(base_path, centroids_path);
         debug!("saving to local file: {:?}", local_path);
         write(
             local_path,
@@ -61,8 +63,8 @@ fn main() {
         .expect("write json error");
     }
 
-    let queries = read_vecs::<f32>(&query_path).expect("read query error");
-    let truth = read_vecs::<i32>(&truth_path).expect("read truth error");
+    let queries = read_vecs::<f32>(query_path).expect("read query error");
+    let truth = read_vecs::<i32>(truth_path).expect("read truth error");
     debug!("querying...");
     let mut total_time = 0.0;
     let mut recall = 0.0;

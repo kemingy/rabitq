@@ -1,11 +1,11 @@
 //! RaBitQ implementation.
 
+use std::path::Path;
+
+use log::debug;
 use nalgebra::{DMatrix, DVector};
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
-use log::debug;
-
-use std::path::Path;
 
 use crate::utils::{gen_random_bias, gen_random_orthogonal, matrix_from_fvecs};
 
@@ -57,22 +57,22 @@ fn binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 }
 
 /// Calculate the dot product of two binary vectors with different lengths.
-/// 
+///
 /// The length of `y` should be `x.len() * THETA_LOG_DIM`.
 fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
     let mut res = 0;
     let length = x.len();
     let mut y_slice = y;
     for i in 0..THETA_LOG_DIM as usize {
-        res += binary_dot_product(x, &y_slice) << i;
+        res += binary_dot_product(x, y_slice) << i;
         y_slice = &y_slice[length..];
     }
     res
 }
 
 /// RaBitQ struct.
-/// 
-/// 
+///
+///
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaBitQ {
     dim: u32,
