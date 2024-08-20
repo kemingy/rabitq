@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use log::debug;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, DVectorView};
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,22 @@ fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
     res
 }
 
+/// Find the nearest cluster for the given vector.
+fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> usize {
+    let mut min_dist = f32::MAX;
+    let mut min_label = 0;
+    let mut temp = DVector::<f32>::zeros(vec.len());
+    for (j, centroid) in centroids.column_iter().enumerate() {
+        vec.sub_to(&centroid, &mut temp);
+        let dist = temp.norm_squared();
+        if dist < min_dist {
+            min_dist = dist;
+            min_label = j;
+        }
+    }
+    min_label
+}
+
 /// RaBitQ struct.
 ///
 ///
@@ -117,15 +133,7 @@ impl RaBitQ {
             if i % 5000 == 0 {
                 debug!("\t> preprocessing {}...", i);
             }
-            let mut min_dist = f32::MAX;
-            let mut min_label = 0;
-            for (j, centroid) in centroids.column_iter().enumerate() {
-                let dist = (xp - centroid).norm_squared();
-                if dist < min_dist {
-                    min_dist = dist;
-                    min_label = j;
-                }
-            }
+            let min_label = kmeans_nearest_cluster(&centroids, &xp);
             labels[min_label].push(i as u32);
             let x_c_quantized = xp - centroids.column(min_label);
             x_c_distance[i] = x_c_quantized.norm();
@@ -201,8 +209,10 @@ impl RaBitQ {
         let y_projected = query.tr_mul(&self.orthogonal).transpose();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
+        let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for (i, centroid) in self.centroids.column_iter().enumerate() {
-            let dist = (&y_projected - centroid).norm_squared();
+            y_projected.sub_to(&centroid, &mut residual);
+            let dist = residual.norm_squared();
             lists.push((dist, i));
         }
         let length = probe.min(k);
@@ -210,7 +220,7 @@ impl RaBitQ {
 
         let mut rough_distances = Vec::new();
         for &(dist, i) in lists[..length].iter() {
-            let residual = &y_projected - self.centroids.column(i);
+            y_projected.sub_to(&self.centroids.column(i), &mut residual);
             let lower_bound = residual.min();
             let upper_bound = residual.max();
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
@@ -252,9 +262,11 @@ impl RaBitQ {
         let mut recent_max_accurate = f32::MIN;
         let mut res = Vec::with_capacity(topk);
         let mut count = 0;
+        let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
-                let accurate = (self.base.column(u as usize) - query).norm_squared();
+                self.base.column(u as usize).sub_to(query, &mut residual);
+                let accurate = residual.norm_squared();
                 if accurate < threshold {
                     res.push((accurate, u as i32));
                     count += 1;
