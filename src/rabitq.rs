@@ -7,6 +7,7 @@ use nalgebra::{DMatrix, DVector, DVectorView};
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
+use crate::metrics::METRICS;
 use crate::utils::{gen_random_bias, gen_random_orthogonal, matrix_from_fvecs};
 
 const DEFAULT_X_DOT_PRODUCT: f32 = 0.8;
@@ -87,8 +88,6 @@ fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> u
 }
 
 /// RaBitQ struct.
-///
-///
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaBitQ {
     dim: u32,
@@ -248,6 +247,7 @@ impl RaBitQ {
             }
         }
 
+        METRICS.add_rough_count(rough_distances.len() as u64);
         self.rerank(query, &rough_distances, topk)
     }
 
@@ -280,6 +280,7 @@ impl RaBitQ {
             }
         }
 
+        METRICS.add_precise_count(res.len() as u64);
         let length = topk.min(res.len());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
         res[..length].iter().map(|(_, u)| *u).collect()

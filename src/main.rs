@@ -5,7 +5,9 @@ use std::time::Instant;
 use argh::FromArgs;
 use env_logger::Env;
 use log::{debug, info};
-use rabitq::{calculate_recall, dvector_from_vec, read_vecs, RaBitQ};
+use rabitq::metrics::METRICS;
+use rabitq::utils::{calculate_recall, dvector_from_vec, read_vecs};
+use rabitq::RaBitQ;
 
 #[derive(FromArgs, Debug)]
 /// RaBitQ
@@ -81,4 +83,5 @@ fn main() {
         queries.len() as f64 / total_time,
         recall / queries.len() as f32
     );
+    info!("Metrics [{}]", METRICS.to_str());
 }
