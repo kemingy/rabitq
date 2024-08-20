@@ -210,8 +210,19 @@ impl RaBitQ {
         let mut lists = Vec::with_capacity(k);
         let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for (i, centroid) in self.centroids.column_iter().enumerate() {
-            y_projected.sub_to(&centroid, &mut residual);
-            let dist = residual.norm_squared();
+            let dist = {
+                #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+                {
+                    if is_x86_feature_detected!("avx2") {
+                        unsafe {
+                            crate::distance::l2_squared_distance_avx2(&centroid, &y_projected)
+                        }
+                    } else {
+                        y_projected.sub_to(&centroid, &mut residual);
+                        residual.norm_squared()
+                    }
+                }
+            };
             lists.push((dist, i));
         }
         let length = probe.min(k);
@@ -265,8 +276,22 @@ impl RaBitQ {
         let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
-                self.base.column(u as usize).sub_to(query, &mut residual);
-                let accurate = residual.norm_squared();
+                let accurate = {
+                    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+                    {
+                        if is_x86_feature_detected!("avx2") {
+                            unsafe {
+                                crate::distance::l2_squared_distance_avx2(
+                                    &self.base.column(u as usize),
+                                    query,
+                                )
+                            }
+                        } else {
+                            self.base.column(u as usize).sub_to(query, &mut residual);
+                            residual.norm_squared()
+                        }
+                    }
+                };
                 if accurate < threshold {
                     res.push((accurate, u as i32));
                     count += 1;
