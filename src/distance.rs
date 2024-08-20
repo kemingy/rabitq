@@ -1,6 +1,6 @@
 //! Compute the distance between two vectors.
 
-use nalgebra::{DVector, DVectorView};
+use nalgebra::DVectorView;
 
 /// Compute the squared Euclidean distance between two vectors.
 /// Code refer to https://github.com/nmslib/hnswlib/blob/master/hnswlib/space_l2.h
@@ -10,7 +10,7 @@ use nalgebra::{DVector, DVectorView};
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn l2_squared_distance_avx2(lhs: &DVectorView<f32>, rhs: &DVector<f32>) -> f32 {
+pub unsafe fn l2_squared_distance_avx2(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>) -> f32 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]

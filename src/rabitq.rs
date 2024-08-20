@@ -27,12 +27,9 @@ fn vector_binarize_u64(vec: &DVector<f32>) -> Vec<u64> {
 }
 
 /// Convert the vector to +1/-1 format.
+#[inline]
 fn vector_binarize_one(vec: &DVector<f32>) -> DVector<f32> {
-    let mut binary = DVector::zeros(vec.len());
-    for (i, &v) in vec.iter().enumerate() {
-        binary[i] = if v > 0.0 { 1.0 } else { -1.0 };
-    }
-    binary
+    DVector::from_fn(vec.len(), |i, _| if vec[i] > 0.0 { 1.0 } else { -1.0 })
 }
 
 /// Convert the vector to binary format (one value to multiple bits) and store in a u64 vector.
@@ -75,10 +72,24 @@ fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> usize {
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
-    let mut temp = DVector::<f32>::zeros(vec.len());
+    let mut residual = DVector::<f32>::zeros(vec.len());
     for (j, centroid) in centroids.column_iter().enumerate() {
-        vec.sub_to(&centroid, &mut temp);
-        let dist = temp.norm_squared();
+        let dist = {
+            #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    unsafe { crate::distance::l2_squared_distance_avx2(&centroid, vec) }
+                } else {
+                    vec.sub_to(&centroid, &mut residual);
+                    residual.norm_squared()
+                }
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+            {
+                self.base.column(u as usize).sub_to(query, &mut residual);
+                residual.norm_squared()
+            }
+        };
         if dist < min_dist {
             min_dist = dist;
             min_label = j;
@@ -215,12 +226,20 @@ impl RaBitQ {
                 {
                     if is_x86_feature_detected!("avx2") {
                         unsafe {
-                            crate::distance::l2_squared_distance_avx2(&centroid, &y_projected)
+                            crate::distance::l2_squared_distance_avx2(
+                                &centroid,
+                                &y_projected.as_view(),
+                            )
                         }
                     } else {
                         y_projected.sub_to(&centroid, &mut residual);
                         residual.norm_squared()
                     }
+                }
+                #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+                {
+                    self.base.column(u as usize).sub_to(query, &mut residual);
+                    residual.norm_squared()
                 }
             };
             lists.push((dist, i));
@@ -283,13 +302,18 @@ impl RaBitQ {
                             unsafe {
                                 crate::distance::l2_squared_distance_avx2(
                                     &self.base.column(u as usize),
-                                    query,
+                                    &query.as_view(),
                                 )
                             }
                         } else {
                             self.base.column(u as usize).sub_to(query, &mut residual);
                             residual.norm_squared()
                         }
+                    }
+                    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+                    {
+                        self.base.column(u as usize).sub_to(query, &mut residual);
+                        residual.norm_squared()
                     }
                 };
                 if accurate < threshold {
