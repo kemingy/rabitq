@@ -1,5 +1,6 @@
 //! RaBitQ implementation.
 
+use core::f32;
 use std::path::Path;
 
 use log::debug;
@@ -101,6 +102,40 @@ fn l2_squared_distance(
         lhs.sub_to(rhs, residual);
         residual.norm_squared()
     }
+}
+
+// Get the min/max value of a vector.
+fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
+    let mut min = f32::MAX;
+    let mut max = f32::MIN;
+    for v in vec.iter() {
+        if *v < min {
+            min = *v;
+        }
+        if *v > max {
+            max = *v;
+        }
+    }
+    (min, max)
+}
+
+// Quantize the query residual vector.
+fn quantize_query_vector(
+    quantized: &mut DVector<u8>,
+    vec: &DVectorView<f32>,
+    bias: &DVectorView<f32>,
+    lower_bound: f32,
+    multiplier: f32,
+) -> u32 {
+    let mut sum = 0u32;
+    for i in 0..vec.len() {
+        let q = ((vec[i] - lower_bound) * multiplier + bias[i])
+            .to_u8()
+            .expect("convert to u8 error");
+        quantized[i] = q;
+        sum += q as u32;
+    }
+    sum
 }
 
 /// Find the nearest cluster for the given vector.
@@ -248,16 +283,20 @@ impl RaBitQ {
         lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
 
         let mut rough_distances = Vec::new();
+        let mut quantized = DVector::<u8>::zeros(self.dim as usize);
         for &(dist, i) in lists[..length].iter() {
             y_projected.sub_to(&self.centroids.column(i), &mut residual);
-            let lower_bound = residual.min();
-            let upper_bound = residual.max();
+            let (lower_bound, upper_bound) = min_max(&residual.as_view());
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
             let one_over_delta = 1.0 / delta;
-            let y_scaled = residual.add_scalar(-lower_bound) * one_over_delta + &self.rand_bias;
-            let y_quantized = y_scaled.map(|v| v.to_u8().expect("convert to u8 error"));
-            let scalar_sum = y_quantized.iter().fold(0u32, |acc, &v| acc + v as u32);
-            let y_binary_vec = vector_binarize_query(&y_quantized);
+            let scalar_sum = quantize_query_vector(
+                &mut quantized,
+                &residual.as_view(),
+                &self.rand_bias.as_view(),
+                lower_bound,
+                one_over_delta,
+            );
+            let y_binary_vec = vector_binarize_query(&quantized);
             let dist_sqrt = dist.sqrt();
             for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
