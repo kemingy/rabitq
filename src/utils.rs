@@ -18,6 +18,13 @@ pub fn gen_random_orthogonal(dim: usize) -> DMatrix<f32> {
     random.unwrap()
 }
 
+/// Generate a random orthogonal matrix from QR decomposition.
+pub fn gen_random_qr_orthogonal(dim: usize) -> DMatrix<f32> {
+    let mut rng = thread_rng();
+    let random = DMatrix::from_fn(dim, dim, |_, _| rng.gen::<f32>());
+    random.qr().q()
+}
+
 /// Generate an identity matrix as a special orthogonal matrix.
 ///
 /// Use this function to debug the logic.

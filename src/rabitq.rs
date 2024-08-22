@@ -7,13 +7,9 @@ use nalgebra::{DMatrix, DVector, DVectorView};
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
+use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
 use crate::metrics::METRICS;
-use crate::utils::{gen_random_bias, gen_random_orthogonal, matrix_from_fvecs};
-
-const DEFAULT_X_DOT_PRODUCT: f32 = 0.8;
-const EPSILON: f32 = 1.9;
-const THETA_LOG_DIM: u32 = 4;
-const WINDOWS_SIZE: usize = 16;
+use crate::utils::{gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs};
 
 /// Convert the vector to binary format and store in a u64 vector.
 fn vector_binarize_u64(vec: &DVector<f32>) -> Vec<u64> {
@@ -32,8 +28,25 @@ fn vector_binarize_one(vec: &DVector<f32>) -> DVector<f32> {
     DVector::from_fn(vec.len(), |i, _| if vec[i] > 0.0 { 1.0 } else { -1.0 })
 }
 
+/// Interface of `vector_binarize_query`
+fn vector_binarize_query(vec: &DVector<u8>) -> Vec<u64> {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { crate::simd::vector_binarize_query_avx2(&vec.as_view()) }
+        } else {
+            vector_binarize_query_raw(vec)
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    {
+        vector_binarize_query_raw(vec)
+    }
+}
+
 /// Convert the vector to binary format (one value to multiple bits) and store in a u64 vector.
-fn query_vector_binarize(vec: &DVector<u8>) -> Vec<u64> {
+#[inline]
+fn vector_binarize_query_raw(vec: &DVector<u8>) -> Vec<u64> {
     let length = vec.len();
     let mut binary = vec![0u64; length * THETA_LOG_DIM as usize / 64];
     for j in 0..THETA_LOG_DIM as usize {
@@ -78,7 +91,7 @@ fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> u
             #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
             {
                 if is_x86_feature_detected!("avx2") {
-                    unsafe { crate::distance::l2_squared_distance_avx2(&centroid, vec) }
+                    unsafe { crate::simd::l2_squared_distance_avx2(&centroid, vec) }
                 } else {
                     vec.sub_to(&centroid, &mut residual);
                     residual.norm_squared()
@@ -123,7 +136,7 @@ impl RaBitQ {
         let centroids = matrix_from_fvecs(centroid_path);
         let k = centroids.shape().0;
         debug!("n: {}, dim: {}, k: {}", n, dim, k);
-        let orthogonal = gen_random_orthogonal(dim);
+        let orthogonal = gen_random_qr_orthogonal(dim);
         let rand_bias = gen_random_bias(dim);
 
         // projection
@@ -226,10 +239,7 @@ impl RaBitQ {
                 {
                     if is_x86_feature_detected!("avx2") {
                         unsafe {
-                            crate::distance::l2_squared_distance_avx2(
-                                &centroid,
-                                &y_projected.as_view(),
-                            )
+                            crate::simd::l2_squared_distance_avx2(&centroid, &y_projected.as_view())
                         }
                     } else {
                         y_projected.sub_to(&centroid, &mut residual);
@@ -257,7 +267,7 @@ impl RaBitQ {
             let y_scaled = residual.add_scalar(-lower_bound) * one_over_delta + &self.rand_bias;
             let y_quantized = y_scaled.map(|v| v.to_u8().expect("convert to u8 error"));
             let scalar_sum = y_quantized.iter().fold(0u32, |acc, &v| acc + v as u32);
-            let y_binary_vec = query_vector_binarize(&y_quantized);
+            let y_binary_vec = vector_binarize_query(&y_quantized);
             let dist_sqrt = dist.sqrt();
             for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
@@ -300,7 +310,7 @@ impl RaBitQ {
                     {
                         if is_x86_feature_detected!("avx2") {
                             unsafe {
-                                crate::distance::l2_squared_distance_avx2(
+                                crate::simd::l2_squared_distance_avx2(
                                     &self.base.column(u as usize),
                                     &query.as_view(),
                                 )

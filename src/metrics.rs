@@ -22,10 +22,13 @@ impl Metrics {
 
     /// get the instance
     pub fn to_str(&self) -> String {
+        let rough = self.rough.load(Ordering::Relaxed);
+        let precise = self.precise.load(Ordering::Relaxed);
         format!(
-            "rough: {}, precise: {}",
-            self.rough.load(Ordering::Relaxed),
-            self.precise.load(Ordering::Relaxed)
+            "rough: {}, precise: {}, ratio: {:.2}",
+            rough,
+            precise,
+            rough as f64 / precise as f64,
         )
     }
 

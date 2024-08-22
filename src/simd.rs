@@ -1,6 +1,8 @@
-//! Compute the distance between two vectors.
+//! Accelerate with SIMD.
 
 use nalgebra::DVectorView;
+
+use crate::consts::THETA_LOG_DIM;
 
 /// Compute the squared Euclidean distance between two vectors.
 /// Code refer to https://github.com/nmslib/hnswlib/blob/master/hnswlib/space_l2.h
@@ -68,4 +70,35 @@ pub unsafe fn l2_squared_distance_avx2(lhs: &DVectorView<f32>, rhs: &DVectorView
         rhs_ptr = rhs_ptr.add(1);
     }
     res
+}
+
+/// Convert an [u8] to 4x binary vector stored as u64.
+///
+/// # Safety
+///
+/// This function is marked unsafe because it requires the AVX intrinsics.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx2")]
+pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>) -> Vec<u64> {
+    use std::arch::x86_64::*;
+
+    let length = vec.len();
+    let mut ptr = vec.as_ptr() as *const __m256i;
+    let mut binary = vec![0u64; length * THETA_LOG_DIM as usize / 64];
+
+    for i in (0..length).step_by(32) {
+        // since it's not guaranteed that the vec is fully-aligned
+        let mut v = _mm256_loadu_si256(ptr);
+        ptr = ptr.add(1);
+        v = _mm256_slli_epi32(v, 4);
+        for j in 0..THETA_LOG_DIM as usize {
+            let mask = (_mm256_movemask_epi8(v) as u32) as u64;
+            // let shift = if (i / 32) % 2 == 0 { 32 } else { 0 };
+            let shift = ((i >> 5) & 1) << 5;
+            binary[(3 - j) * (length >> 6) + (i >> 6)] |= mask << shift;
+            v = _mm256_slli_epi32(v, 1);
+        }
+    }
+
+    binary
 }
