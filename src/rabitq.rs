@@ -81,28 +81,35 @@ fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
     res
 }
 
+/// Calculate the L2 squared distance between two vectors.
+fn l2_squared_distance(
+    lhs: &DVectorView<f32>,
+    rhs: &DVectorView<f32>,
+    residual: &mut DVector<f32>,
+) -> f32 {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { crate::simd::l2_squared_distance_avx2(lhs, rhs) }
+        } else {
+            lhs.sub_to(rhs, residual);
+            residual.norm_squared()
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    {
+        lhs.sub_to(rhs, residual);
+        residual.norm_squared()
+    }
+}
+
 /// Find the nearest cluster for the given vector.
 fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> usize {
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
     let mut residual = DVector::<f32>::zeros(vec.len());
     for (j, centroid) in centroids.column_iter().enumerate() {
-        let dist = {
-            #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-            {
-                if is_x86_feature_detected!("avx2") {
-                    unsafe { crate::simd::l2_squared_distance_avx2(&centroid, vec) }
-                } else {
-                    vec.sub_to(&centroid, &mut residual);
-                    residual.norm_squared()
-                }
-            }
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-            {
-                self.base.column(u as usize).sub_to(query, &mut residual);
-                residual.norm_squared()
-            }
-        };
+        let dist = l2_squared_distance(&centroid, vec, &mut residual);
         if dist < min_dist {
             min_dist = dist;
             min_label = j;
@@ -234,24 +241,7 @@ impl RaBitQ {
         let mut lists = Vec::with_capacity(k);
         let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for (i, centroid) in self.centroids.column_iter().enumerate() {
-            let dist = {
-                #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-                {
-                    if is_x86_feature_detected!("avx2") {
-                        unsafe {
-                            crate::simd::l2_squared_distance_avx2(&centroid, &y_projected.as_view())
-                        }
-                    } else {
-                        y_projected.sub_to(&centroid, &mut residual);
-                        residual.norm_squared()
-                    }
-                }
-                #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-                {
-                    self.base.column(u as usize).sub_to(query, &mut residual);
-                    residual.norm_squared()
-                }
-            };
+            let dist = l2_squared_distance(&centroid, &y_projected.as_view(), &mut residual);
             lists.push((dist, i));
         }
         let length = probe.min(k);
@@ -305,27 +295,11 @@ impl RaBitQ {
         let mut residual = DVector::<f32>::zeros(self.dim as usize);
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
-                let accurate = {
-                    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-                    {
-                        if is_x86_feature_detected!("avx2") {
-                            unsafe {
-                                crate::simd::l2_squared_distance_avx2(
-                                    &self.base.column(u as usize),
-                                    &query.as_view(),
-                                )
-                            }
-                        } else {
-                            self.base.column(u as usize).sub_to(query, &mut residual);
-                            residual.norm_squared()
-                        }
-                    }
-                    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-                    {
-                        self.base.column(u as usize).sub_to(query, &mut residual);
-                        residual.norm_squared()
-                    }
-                };
+                let accurate = l2_squared_distance(
+                    &self.base.column(u as usize),
+                    &query.as_view(),
+                    &mut residual,
+                );
                 if accurate < threshold {
                     res.push((accurate, u as i32));
                     count += 1;
