@@ -168,6 +168,18 @@ pub struct RaBitQ {
 }
 
 impl RaBitQ {
+    /// Load from a JSON file.
+    pub fn load_from_json(path: &impl AsRef<Path>) -> Self {
+        serde_json::from_slice(&std::fs::read(path).expect("open json error"))
+            .expect("deserialize error")
+    }
+
+    /// Dump to a JSON file.
+    pub fn dump_to_json(&self, path: &impl AsRef<Path>) {
+        std::fs::write(path, serde_json::to_string(&self).expect("serialize error"))
+            .expect("write json error");
+    }
+
     /// Build the RaBitQ model from the base and centroids files.
     pub fn from_path(base_path: &Path, centroid_path: &Path) -> Self {
         let base = matrix_from_fvecs(base_path);

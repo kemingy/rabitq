@@ -1,4 +1,3 @@
-use std::fs::{read, write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -52,17 +51,12 @@ fn main() {
     let rabitq: RaBitQ;
     if local_path.is_file() {
         debug!("loading from {:?}...", local_path);
-        rabitq = serde_json::from_slice(&read(local_path).expect("open json error"))
-            .expect("deserialize error");
+        rabitq = RaBitQ::load_from_json(&local_path);
     } else {
         debug!("training...");
         rabitq = RaBitQ::from_path(base_path, centroids_path);
         debug!("saving to local file: {:?}", local_path);
-        write(
-            local_path,
-            serde_json::to_string(&rabitq).expect("serialize error"),
-        )
-        .expect("write json error");
+        rabitq.dump_to_json(&local_path);
     }
 
     let queries = read_vecs::<f32>(query_path).expect("read query error");
