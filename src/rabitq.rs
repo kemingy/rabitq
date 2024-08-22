@@ -4,8 +4,7 @@ use core::f32;
 use std::path::Path;
 
 use log::debug;
-use nalgebra::{DMatrix, DVector, DVectorView};
-use num_traits::ToPrimitive;
+use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
@@ -13,7 +12,7 @@ use crate::metrics::METRICS;
 use crate::utils::{gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs};
 
 /// Convert the vector to binary format and store in a u64 vector.
-fn vector_binarize_u64(vec: &DVector<f32>) -> Vec<u64> {
+fn vector_binarize_u64(vec: &DVectorView<f32>) -> Vec<u64> {
     let mut binary = vec![0u64; (vec.len() + 63) / 64];
     for (i, &v) in vec.iter().enumerate() {
         if v > 0.0 {
@@ -25,37 +24,37 @@ fn vector_binarize_u64(vec: &DVector<f32>) -> Vec<u64> {
 
 /// Convert the vector to +1/-1 format.
 #[inline]
-fn vector_binarize_one(vec: &DVector<f32>) -> DVector<f32> {
+fn vector_binarize_one(vec: &DVectorView<f32>) -> DVector<f32> {
     DVector::from_fn(vec.len(), |i, _| if vec[i] > 0.0 { 1.0 } else { -1.0 })
 }
 
 /// Interface of `vector_binarize_query`
-fn vector_binarize_query(vec: &DVector<u8>) -> Vec<u64> {
+fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
-            unsafe { crate::simd::vector_binarize_query_avx2(&vec.as_view()) }
+            unsafe {
+                crate::simd::vector_binarize_query_avx2(&vec.as_view(), binary);
+            }
         } else {
-            vector_binarize_query_raw(vec)
+            vector_binarize_query_raw(vec, binary);
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        vector_binarize_query_raw(vec)
+        vector_binarize_query_raw(vec, binary);
     }
 }
 
 /// Convert the vector to binary format (one value to multiple bits) and store in a u64 vector.
 #[inline]
-fn vector_binarize_query_raw(vec: &DVector<u8>) -> Vec<u64> {
+fn vector_binarize_query_raw(vec: &DVectorView<u8>, binary: &mut [u64]) {
     let length = vec.len();
-    let mut binary = vec![0u64; length * THETA_LOG_DIM as usize / 64];
     for j in 0..THETA_LOG_DIM as usize {
         for i in 0..length {
             binary[(i + j * length) / 64] |= (((vec[i] >> j) & 1) as u64) << (i % 64);
         }
     }
-    binary
 }
 
 /// Calculate the dot product of two binary vectors.
@@ -129,9 +128,7 @@ fn quantize_query_vector(
 ) -> u32 {
     let mut sum = 0u32;
     for i in 0..vec.len() {
-        let q = ((vec[i] - lower_bound) * multiplier + bias[i])
-            .to_u8()
-            .expect("convert to u8 error");
+        let q = ((vec[i] - lower_bound) * multiplier + bias[i]) as u8;
         quantized[i] = q;
         sum += q as u32;
     }
@@ -139,7 +136,7 @@ fn quantize_query_vector(
 }
 
 /// Find the nearest cluster for the given vector.
-fn kmeans_nearest_cluster(centroids: &DMatrix<f32>, vec: &DVectorView<f32>) -> usize {
+fn kmeans_nearest_cluster(centroids: &DMatrixView<f32>, vec: &DVectorView<f32>) -> usize {
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
     let mut residual = DVector::<f32>::zeros(vec.len());
@@ -198,13 +195,13 @@ impl RaBitQ {
             if i % 5000 == 0 {
                 debug!("\t> preprocessing {}...", i);
             }
-            let min_label = kmeans_nearest_cluster(&centroids, &xp);
+            let min_label = kmeans_nearest_cluster(&centroids.as_view(), &xp);
             labels[min_label].push(i as u32);
             let x_c_quantized = xp - centroids.column(min_label);
             x_c_distance[i] = x_c_quantized.norm();
             x_c_distance_square[i] = x_c_distance[i].powi(2);
-            x_binary_vec.push(vector_binarize_u64(&x_c_quantized));
-            x_signed_vec.push(vector_binarize_one(&x_c_quantized));
+            x_binary_vec.push(vector_binarize_u64(&x_c_quantized.as_view()));
+            x_signed_vec.push(vector_binarize_one(&x_c_quantized.as_view()));
             let norm = x_c_distance[i] * dim_sqrt;
             x_dot_product[i] = if norm.is_normal() {
                 x_c_quantized.dot(&x_signed_vec[i]) / norm
@@ -284,6 +281,7 @@ impl RaBitQ {
 
         let mut rough_distances = Vec::new();
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
+        let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
         for &(dist, i) in lists[..length].iter() {
             y_projected.sub_to(&self.centroids.column(i), &mut residual);
             let (lower_bound, upper_bound) = min_max(&residual.as_view());
@@ -296,7 +294,8 @@ impl RaBitQ {
                 lower_bound,
                 one_over_delta,
             );
-            let y_binary_vec = vector_binarize_query(&quantized);
+            binary_vec.iter_mut().for_each(|element| *element = 0);
+            vector_binarize_query(&quantized.as_view(), &mut binary_vec);
             let dist_sqrt = dist.sqrt();
             for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
@@ -305,7 +304,7 @@ impl RaBitQ {
                         + dist
                         + lower_bound * self.factor_ppc[ju]
                         + (2.0
-                            * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &y_binary_vec)
+                            * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
                                 as f32
                             - scalar_sum as f32)
                             * self.factor_ip[ju]

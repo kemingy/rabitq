@@ -79,12 +79,11 @@ pub unsafe fn l2_squared_distance_avx2(lhs: &DVectorView<f32>, rhs: &DVectorView
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>) -> Vec<u64> {
+pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>, binary: &mut [u64]) {
     use std::arch::x86_64::*;
 
     let length = vec.len();
     let mut ptr = vec.as_ptr() as *const __m256i;
-    let mut binary = vec![0u64; length * THETA_LOG_DIM as usize / 64];
 
     for i in (0..length).step_by(32) {
         // since it's not guaranteed that the vec is fully-aligned
@@ -99,6 +98,4 @@ pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>) -> Vec<u64> {
             v = _mm256_slli_epi32(v, 1);
         }
     }
-
-    binary
 }
