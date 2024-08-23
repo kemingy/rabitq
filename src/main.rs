@@ -69,7 +69,8 @@ fn main() {
         let start_time = Instant::now();
         let res = rabitq.query_one(&query_vec, args.probe, args.topk);
         total_time += start_time.elapsed().as_secs_f64();
-        recall += calculate_recall(&truth[i], &res, args.topk);
+        let ids: Vec<i32> = res.iter().map(|(_, id)| *id as i32).collect();
+        recall += calculate_recall(&truth[i], &ids, args.topk);
     }
 
     info!(

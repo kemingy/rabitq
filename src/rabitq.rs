@@ -104,7 +104,7 @@ fn l2_squared_distance(
 }
 
 // Get the min/max value of a vector.
-fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
+fn min_max_raw(vec: &DVectorView<f32>) -> (f32, f32) {
     let mut min = f32::MAX;
     let mut max = f32::MIN;
     for v in vec.iter() {
@@ -116,6 +116,22 @@ fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
         }
     }
     (min, max)
+}
+
+// Interface of `min_max`
+fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("avx") {
+            unsafe { crate::simd::min_max_avx(vec) }
+        } else {
+            min_max_raw(vec)
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    {
+        min_max_raw(vec)
+    }
 }
 
 // Quantize the query residual vector.
@@ -279,7 +295,7 @@ impl RaBitQ {
     }
 
     /// Query the topk nearest neighbors for the given query.
-    pub fn query_one(&self, query: &DVector<f32>, probe: usize, topk: usize) -> Vec<i32> {
+    pub fn query_one(&self, query: &DVector<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
         let y_projected = query.tr_mul(&self.orthogonal).transpose();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
@@ -337,7 +353,7 @@ impl RaBitQ {
         query: &DVector<f32>,
         rough_distances: &[(f32, u32)],
         topk: usize,
-    ) -> Vec<i32> {
+    ) -> Vec<(f32, u32)> {
         let mut threshold = f32::MAX;
         let mut recent_max_accurate = f32::MIN;
         let mut res = Vec::with_capacity(topk);
@@ -351,7 +367,7 @@ impl RaBitQ {
                     &mut residual,
                 );
                 if accurate < threshold {
-                    res.push((accurate, u as i32));
+                    res.push((accurate, u));
                     count += 1;
                     recent_max_accurate = recent_max_accurate.max(accurate);
                     if count == WINDOWS_SIZE {
@@ -366,6 +382,7 @@ impl RaBitQ {
         METRICS.add_precise_count(res.len() as u64);
         let length = topk.min(res.len());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
-        res[..length].iter().map(|(_, u)| *u).collect()
+        res.truncate(length);
+        res
     }
 }

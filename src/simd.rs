@@ -99,3 +99,54 @@ pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>, binary: &mut [u6
         }
     }
 }
+
+/// Compute the min and max value of a vector.
+///
+/// # Safety
+///
+/// This function is marked unsafe because it requires the AVX intrinsics.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx")]
+pub unsafe fn min_max_avx(vec: &DVectorView<f32>) -> (f32, f32) {
+    use std::arch::x86_64::*;
+
+    let mut min_32x8 = _mm256_set1_ps(f32::MAX);
+    let mut max_32x8 = _mm256_set1_ps(f32::MIN);
+    let mut ptr = vec.as_ptr();
+    let mut f32x8 = [0.0f32; 8];
+    let mut min = f32::MAX;
+    let mut max = f32::MIN;
+    let length = vec.len();
+    let rest = length & 0b111;
+
+    for _ in 0..(length / 8) {
+        let v = _mm256_loadu_ps(ptr);
+        ptr = ptr.add(8);
+        min_32x8 = _mm256_min_ps(min_32x8, v);
+        max_32x8 = _mm256_max_ps(max_32x8, v);
+    }
+    _mm256_storeu_ps(f32x8.as_mut_ptr(), min_32x8);
+    for &x in f32x8.iter() {
+        if x < min {
+            min = x;
+        }
+    }
+    _mm256_storeu_ps(f32x8.as_mut_ptr(), max_32x8);
+    for &x in f32x8.iter() {
+        if x > max {
+            max = x;
+        }
+    }
+
+    for _ in 0..rest {
+        if *ptr < min {
+            min = *ptr;
+        }
+        if *ptr > max {
+            max = *ptr;
+        }
+        ptr = ptr.add(1);
+    }
+
+    (min, max)
+}
