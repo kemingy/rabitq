@@ -135,7 +135,7 @@ fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
 }
 
 // Quantize the query residual vector.
-fn quantize_query_vector(
+fn scalar_quantize_raw(
     quantized: &mut DVector<u8>,
     vec: &DVectorView<f32>,
     bias: &DVectorView<f32>,
@@ -149,6 +149,28 @@ fn quantize_query_vector(
         sum += q as u32;
     }
     sum
+}
+
+// Interface of `scalar_quantize`
+fn scalar_quantize(
+    quantized: &mut DVector<u8>,
+    vec: &DVectorView<f32>,
+    bias: &DVectorView<f32>,
+    lower_bound: f32,
+    multiplier: f32,
+) -> u32 {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { crate::simd::scalar_quantize_avx2(quantized, vec, lower_bound, multiplier) }
+        } else {
+            scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    {
+        scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
+    }
 }
 
 /// Find the nearest cluster for the given vector.
@@ -315,7 +337,7 @@ impl RaBitQ {
             let (lower_bound, upper_bound) = min_max(&residual.as_view());
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
             let one_over_delta = 1.0 / delta;
-            let scalar_sum = quantize_query_vector(
+            let scalar_sum = scalar_quantize(
                 &mut quantized,
                 &residual.as_view(),
                 &self.rand_bias.as_view(),
