@@ -34,7 +34,7 @@ fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
     {
         if is_x86_feature_detected!("avx2") {
             unsafe {
-                crate::simd::vector_binarize_query_avx2(&vec.as_view(), binary);
+                crate::simd::vector_binarize_query(&vec.as_view(), binary);
             }
         } else {
             vector_binarize_query_raw(vec, binary);
@@ -90,7 +90,7 @@ fn l2_squared_distance(
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
-            unsafe { crate::simd::l2_squared_distance_avx2(lhs, rhs) }
+            unsafe { crate::simd::l2_squared_distance(lhs, rhs) }
         } else {
             lhs.sub_to(rhs, residual);
             residual.norm_squared()
@@ -127,7 +127,7 @@ fn min_max_residual(
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx") {
-            unsafe { crate::simd::min_max_residual_avx(res, x, y) }
+            unsafe { crate::simd::min_max_residual(res, x, y) }
         } else {
             x.sub_to(y, res);
             min_max_raw(&res.as_view())
@@ -168,7 +168,7 @@ fn scalar_quantize(
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
-            unsafe { crate::simd::scalar_quantize_avx2(quantized, vec, lower_bound, multiplier) }
+            unsafe { crate::simd::scalar_quantize(quantized, vec, lower_bound, multiplier) }
         } else {
             scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
         }
@@ -176,6 +176,26 @@ fn scalar_quantize(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
         scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
+    }
+}
+
+/// Project the vector to the orthogonal matrix.
+#[allow(dead_code)]
+#[inline]
+fn project(vec: &DVectorView<f32>, orthogonal: &DMatrixView<f32>) -> DVector<f32> {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            DVector::from_fn(vec.len(), |i, _| unsafe {
+                crate::simd::vector_dot_product(vec, &orthogonal.column(i).as_view())
+            })
+        } else {
+            vec.tr_mul(orthogonal).transpose()
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    {
+        vec.tr_mul(orthogonal).transpose()
     }
 }
 
