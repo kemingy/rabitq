@@ -118,19 +118,25 @@ fn min_max_raw(vec: &DVectorView<f32>) -> (f32, f32) {
     (min, max)
 }
 
-// Interface of `min_max`
-fn min_max(vec: &DVectorView<f32>) -> (f32, f32) {
+// Interface of `min_max_residual`
+fn min_max_residual(
+    res: &mut DVector<f32>,
+    x: &DVectorView<f32>,
+    y: &DVectorView<f32>,
+) -> (f32, f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx") {
-            unsafe { crate::simd::min_max_avx(vec) }
+            unsafe { crate::simd::min_max_residual_avx(res, x, y) }
         } else {
-            min_max_raw(vec)
+            x.sub_to(y, res);
+            min_max_raw(&res.as_view())
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        min_max_raw(vec)
+        x.sub_to(y, &mut res);
+        min_max_raw(&res.as_view())
     }
 }
 
@@ -333,8 +339,11 @@ impl RaBitQ {
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
         let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
         for &(dist, i) in lists[..length].iter() {
-            y_projected.sub_to(&self.centroids.column(i), &mut residual);
-            let (lower_bound, upper_bound) = min_max(&residual.as_view());
+            let (lower_bound, upper_bound) = min_max_residual(
+                &mut residual,
+                &y_projected.as_view(),
+                &self.centroids.column(i),
+            );
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
             let one_over_delta = 1.0 / delta;
             let scalar_sum = scalar_quantize(

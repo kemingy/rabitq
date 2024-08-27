@@ -107,23 +107,35 @@ pub unsafe fn vector_binarize_query_avx2(vec: &DVectorView<u8>, binary: &mut [u6
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx")]
-pub unsafe fn min_max_avx(vec: &DVectorView<f32>) -> (f32, f32) {
+pub unsafe fn min_max_residual_avx(
+    res: &mut DVector<f32>,
+    x: &DVectorView<f32>,
+    y: &DVectorView<f32>,
+) -> (f32, f32) {
     use std::arch::x86_64::*;
 
     let mut min_32x8 = _mm256_set1_ps(f32::MAX);
     let mut max_32x8 = _mm256_set1_ps(f32::MIN);
-    let mut ptr = vec.as_ptr();
+    let mut x_ptr = x.as_ptr();
+    let mut y_ptr = y.as_ptr();
+    let mut res_ptr = res.as_mut_ptr();
     let mut f32x8 = [0.0f32; 8];
     let mut min = f32::MAX;
     let mut max = f32::MIN;
-    let length = vec.len();
+    let length = res.len();
     let rest = length & 0b111;
+    let (mut x256, mut y256, mut res256);
 
     for _ in 0..(length / 8) {
-        let v = _mm256_loadu_ps(ptr);
-        ptr = ptr.add(8);
-        min_32x8 = _mm256_min_ps(min_32x8, v);
-        max_32x8 = _mm256_max_ps(max_32x8, v);
+        x256 = _mm256_loadu_ps(x_ptr);
+        y256 = _mm256_loadu_ps(y_ptr);
+        res256 = _mm256_sub_ps(x256, y256);
+        _mm256_storeu_ps(res_ptr, res256);
+        x_ptr = x_ptr.add(8);
+        y_ptr = y_ptr.add(8);
+        res_ptr = res_ptr.add(8);
+        min_32x8 = _mm256_min_ps(min_32x8, res256);
+        max_32x8 = _mm256_max_ps(max_32x8, res256);
     }
     _mm256_storeu_ps(f32x8.as_mut_ptr(), min_32x8);
     for &x in f32x8.iter() {
@@ -139,13 +151,16 @@ pub unsafe fn min_max_avx(vec: &DVectorView<f32>) -> (f32, f32) {
     }
 
     for _ in 0..rest {
-        if *ptr < min {
-            min = *ptr;
+        *res_ptr = *x_ptr - *y_ptr;
+        if *res_ptr < min {
+            min = *res_ptr;
         }
-        if *ptr > max {
-            max = *ptr;
+        if *res_ptr > max {
+            max = *res_ptr;
         }
-        ptr = ptr.add(1);
+        res_ptr = res_ptr.add(1);
+        x_ptr = x_ptr.add(1);
+        y_ptr = y_ptr.add(1);
     }
 
     (min, max)
@@ -153,9 +168,13 @@ pub unsafe fn min_max_avx(vec: &DVectorView<f32>) -> (f32, f32) {
 
 /// Compute the u8 scalar quantization of a f32 vector.
 ///
+/// This function doesn't need `bias` because it *round* the f32 to u32 instead of *floor*.
+///
 /// # Safety
 ///
 /// This function is marked unsafe because it requires the AVX intrinsics.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx2")]
 pub unsafe fn scalar_quantize_avx2(
     quantized: &mut DVector<u8>,
     vec: &DVectorView<f32>,
