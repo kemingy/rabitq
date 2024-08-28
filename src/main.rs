@@ -32,7 +32,7 @@ struct Args {
 }
 
 fn main() {
-    let env = Env::default().filter_or("RABITQ_LOG", "info");
+    let env = Env::default().filter_or("RABITQ_LOG", "debug");
     env_logger::init_from_env(env);
 
     let args: Args = argh::from_env();

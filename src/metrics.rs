@@ -9,6 +9,8 @@ pub struct Metrics {
     pub rough: AtomicU64,
     /// precise count
     pub precise: AtomicU64,
+    /// query count
+    pub query: AtomicU64,
 }
 
 impl Metrics {
@@ -17,6 +19,7 @@ impl Metrics {
         Self {
             rough: AtomicU64::new(0),
             precise: AtomicU64::new(0),
+            query: AtomicU64::new(0),
         }
     }
 
@@ -25,7 +28,8 @@ impl Metrics {
         let rough = self.rough.load(Ordering::Relaxed);
         let precise = self.precise.load(Ordering::Relaxed);
         format!(
-            "rough: {}, precise: {}, ratio: {:.2}",
+            "query: {}, rough: {}, precise: {}, ratio: {:.2}",
+            self.query.load(Ordering::Relaxed),
             rough,
             precise,
             rough as f64 / precise as f64,
@@ -40,6 +44,11 @@ impl Metrics {
     /// add precise count
     pub fn add_precise_count(&self, count: u64) {
         self.precise.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// add query count
+    pub fn add_query_count(&self, count: u64) {
+        self.query.fetch_add(count, Ordering::Relaxed);
     }
 }
 

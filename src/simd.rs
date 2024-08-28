@@ -23,8 +23,7 @@ pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>
     let mut rhs_ptr = rhs.as_ptr();
     let block_16_num = lhs.len() >> 4;
     let rest_num = lhs.len() & 0b1111;
-    let mut temp_block = [0.0f32; 8];
-    let temp_block_ptr = temp_block.as_mut_ptr();
+    let mut f32x8 = [0.0f32; 8];
     let (mut diff, mut vx, mut vy): (__m256, __m256, __m256);
     let mut sum = _mm256_setzero_ps();
 
@@ -52,16 +51,9 @@ pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>
         diff = _mm256_sub_ps(vx, vy);
         sum = _mm256_fmadd_ps(diff, diff, sum);
     }
-    _mm256_store_ps(temp_block_ptr, sum);
-
-    let mut res = temp_block[0]
-        + temp_block[1]
-        + temp_block[2]
-        + temp_block[3]
-        + temp_block[4]
-        + temp_block[5]
-        + temp_block[6]
-        + temp_block[7];
+    _mm256_store_ps(f32x8.as_mut_ptr(), sum);
+    let mut res =
+        f32x8[0] + f32x8[1] + f32x8[2] + f32x8[3] + f32x8[4] + f32x8[5] + f32x8[6] + f32x8[7];
 
     for _ in 0..rest_num {
         let residual = *lhs_ptr - *rhs_ptr;

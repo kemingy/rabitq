@@ -431,6 +431,7 @@ impl RaBitQ {
         }
 
         METRICS.add_precise_count(res.len() as u64);
+        METRICS.add_query_count(1);
         let length = topk.min(res.len());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
         res.truncate(length);
