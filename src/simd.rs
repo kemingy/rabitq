@@ -1,6 +1,6 @@
 //! Accelerate with SIMD.
 
-use nalgebra::{DVector, DVectorView};
+use nalgebra::{iter, DVector, DVectorView};
 
 use crate::consts::THETA_LOG_DIM;
 
@@ -275,4 +275,59 @@ pub unsafe fn vector_dot_product(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>)
     }
 
     sum
+}
+
+/// Compute the quantized packed code with lookup table.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx,avx2")]
+pub unsafe fn accumulate_one_block(codes: &[u8], lookup_table: &[u8], results: &mut [u16]) {
+    use std::arch::x86_64::*;
+
+    let mut codes_ptr = codes.as_ptr() as *const __m256i;
+    let mut lookup_ptr = lookup_table.as_ptr() as *const __m256i;
+    let low_mask = _mm256_set1_epi8(0xf);
+    let (mut accumulate_a, mut accumulate_b, mut accumulate_c, mut accumulate_d) = (
+        _mm256_setzero_si256(),
+        _mm256_setzero_si256(),
+        _mm256_setzero_si256(),
+        _mm256_setzero_si256(),
+    );
+    let (mut code, mut low_256, mut high_256, mut lut_256): (__m256i, __m256i, __m256i, __m256i);
+    // ((dim * 4) / 4) / 4 / 2
+    let iteration = lookup_table.len() / 32;
+
+    for _ in 0..iteration {
+        code = _mm256_loadu_si256(codes_ptr);
+        low_256 = _mm256_and_si256(code, low_mask);
+        high_256 = _mm256_and_si256(_mm256_srli_epi16(code, 4), low_mask);
+        lut_256 = _mm256_loadu_si256(lookup_ptr);
+
+        low_256 = _mm256_shuffle_epi8(lut_256, low_256);
+        high_256 = _mm256_shuffle_epi8(lut_256, high_256);
+
+        accumulate_a = _mm256_add_epi16(accumulate_a, low_256);
+        accumulate_b = _mm256_add_epi16(accumulate_b, _mm256_srli_epi16(low_256, 8));
+        accumulate_c = _mm256_add_epi16(accumulate_c, high_256);
+        accumulate_d = _mm256_add_epi16(accumulate_d, _mm256_srli_epi16(high_256, 8));
+
+        codes_ptr = codes_ptr.add(1);
+        lookup_ptr = lookup_ptr.add(1);
+    }
+
+    accumulate_a = _mm256_sub_epi16(accumulate_a, _mm256_slli_epi16(accumulate_b, 8));
+    _mm256_storeu_si256(
+        results.as_mut_ptr() as *mut __m256i,
+        _mm256_add_epi16(
+            _mm256_permute2f128_si256(accumulate_a, accumulate_b, 0x21),
+            _mm256_blend_epi32(accumulate_a, accumulate_b, 0xf0),
+        ),
+    );
+    accumulate_c = _mm256_sub_epi16(accumulate_c, _mm256_slli_epi16(accumulate_d, 8));
+    _mm256_storeu_si256(
+        results.as_mut_ptr().add(16) as *mut __m256i,
+        _mm256_add_epi16(
+            _mm256_permute2f128_si256(accumulate_c, accumulate_d, 0x21),
+            _mm256_blend_epi32(accumulate_c, accumulate_d, 0xf0),
+        ),
+    );
 }

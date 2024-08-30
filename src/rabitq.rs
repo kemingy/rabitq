@@ -214,6 +214,54 @@ fn kmeans_nearest_cluster(centroids: &DMatrixView<f32>, vec: &DVectorView<f32>) 
     min_label
 }
 
+/// Pack the [u64] binary vectors to [u8] and shuffle the low-4 bits and high-4 bits.
+fn pack_code_from_binary_vec(dim: usize, binary_vec: &[Vec<u64>], pack_code: &mut [u8]) {
+    let aligned_num = (binary_vec.len() + 31) / 32 * 32;
+    let mut flatten_binary_u64 = binary_vec
+        .iter()
+        .flat_map(|x| x.iter().copied())
+        .collect::<Vec<u64>>();
+    let binary_vec_u8: &[u8] = bytemuck::cast_slice(&mut flatten_binary_u64);
+    let block_num = 32;
+    let quarter = dim / 4;
+    let eighth = dim / 8;
+    const PERMUTATION: [usize; 16] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
+    let mut low_bits = [0u8; 32];
+    let mut high_bits = [0u8; 32];
+    let mut pack_code_slice = pack_code;
+
+    for block in (0..aligned_num).step_by(block_num) {
+        for m in (0..quarter).step_by(2) {
+            for i in 0..32 {
+                let val = binary_vec_u8[(block + i) * eighth + (m >> 1)];
+                low_bits[i] = val & 0x0F;
+                high_bits[i] = val >> 4;
+            }
+            for j in 0..16 {
+                pack_code_slice[j] =
+                    low_bits[PERMUTATION[j]] | (low_bits[PERMUTATION[j] + 16] << 4);
+                pack_code_slice[j + 16] =
+                    high_bits[PERMUTATION[j]] | (high_bits[PERMUTATION[j] + 16] << 4);
+            }
+            pack_code_slice = &mut pack_code_slice[32..];
+        }
+    }
+}
+
+/// Build the lookup table for fast scan
+fn pack_lookup_table(quantized: DVectorView<u8>, lookup_table: &mut [u8]) {
+    const MASK: [usize; 16] = [3, 3, 2, 3, 1, 3, 2, 3, 0, 3, 2, 3, 1, 3, 2, 3];
+    let mut lookup_table_slice = lookup_table;
+    for j in 0..(quantized.len() / 4) {
+        lookup_table_slice[0] = 0;
+        for i in 0..16 {
+            lookup_table_slice[i] =
+                lookup_table_slice[i - (i & (!i + 1))] + quantized[4 * j + MASK[i]];
+        }
+        lookup_table_slice = &mut lookup_table_slice[16..];
+    }
+}
+
 /// RaBitQ struct.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaBitQ {
@@ -223,6 +271,8 @@ pub struct RaBitQ {
     rand_bias: DVector<f32>,
     centroids: DMatrix<f32>,
     offsets: Vec<u32>,
+    pack_offsets: Vec<u32>,
+    pack_code: Vec<u8>,
     map_ids: Vec<u32>,
     x_binary_vec: Vec<Vec<u64>>,
     x_c_distance_square: Vec<f32>,
@@ -307,8 +357,13 @@ impl RaBitQ {
         for i in 0..k {
             offsets[i + 1] = offsets[i] + labels[i].len() as u32;
         }
+        let mut pack_offsets = vec![0; k + 1];
+        for i in 0..k {
+            pack_offsets[i + 1] =
+                pack_offsets[i] + (labels[i].len() + 31) as u32 / 32 * 32 * dim as u32 / 8;
+        }
         let flat_labels: Vec<u32> = labels.into_iter().flatten().collect();
-        let x_binary_vec = flat_labels
+        let x_binary_vec: Vec<Vec<u64>> = flat_labels
             .iter()
             .map(|i| x_binary_vec[*i as usize].clone())
             .collect();
@@ -326,12 +381,25 @@ impl RaBitQ {
             .map(|i| factor_ppc[*i as usize])
             .collect();
 
+        // fast scan
+        debug!("build fast scan pack code...");
+        let mut pack_code: Vec<u8> = vec![0; pack_offsets[k as usize] as usize];
+        for i in 0..k {
+            pack_code_from_binary_vec(
+                dim,
+                &x_binary_vec[offsets[i] as usize..offsets[i + 1] as usize],
+                &mut pack_code[(pack_offsets[i] as usize)..(pack_offsets[i + 1] as usize)],
+            );
+        }
+
         Self {
             dim: dim as u32,
             base: base.transpose(),
             orthogonal,
             rand_bias,
             offsets,
+            pack_offsets,
+            pack_code,
             map_ids: flat_labels,
             centroids,
             x_binary_vec,
@@ -358,6 +426,7 @@ impl RaBitQ {
         let mut rough_distances = Vec::new();
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
         let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
+        // let mut lookup_table = vec![0u8; self.dim as usize * 4];
         for &(dist, i) in lists[..length].iter() {
             let (lower_bound, upper_bound) = min_max_residual(
                 &mut residual,
@@ -378,16 +447,14 @@ impl RaBitQ {
             let dist_sqrt = dist.sqrt();
             for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
+                let binary_distance =
+                    2 * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
+                        - scalar_sum;
                 rough_distances.push((
                     (self.x_c_distance_square[ju]
                         + dist
                         + lower_bound * self.factor_ppc[ju]
-                        + (2.0
-                            * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
-                                as f32
-                            - scalar_sum as f32)
-                            * self.factor_ip[ju]
-                            * delta
+                        + binary_distance as f32 * self.factor_ip[ju] * delta
                         - self.error_bound[ju] * dist_sqrt),
                     self.map_ids[ju],
                 ));

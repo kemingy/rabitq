@@ -335,6 +335,7 @@ name = "rabitq"
 version = "0.1.0"
 dependencies = [
  "argh",
+ "bytemuck",
  "env_logger",
  "log",
  "nalgebra",
