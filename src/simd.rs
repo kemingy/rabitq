@@ -278,6 +278,10 @@ pub unsafe fn vector_dot_product(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>)
 }
 
 /// Compute the quantized packed code with lookup table.
+///
+/// # Safety
+///
+/// This function is marked unsafe because it requires the AVX/AVX2 intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx,avx2")]
 pub unsafe fn accumulate_one_block(codes: &[u8], lookup_table: &[u8], results: &mut [u16]) {

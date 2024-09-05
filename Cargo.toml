@@ -23,11 +23,14 @@ serde_json = "1.0.124"
 [features]
 fastscan = []
 
-[profile.release]
-codegen-units = 1
-lto = "fat"
-panic = "abort"
+# [profile.release]
+# codegen-units = 1
+# lto = "fat"
+# panic = "abort"
 
 [profile.perf]
 inherits = "release"
 debug = true
+lto = false
+codegen-units = 16
+panic = "unwind"

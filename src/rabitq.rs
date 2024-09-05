@@ -1,6 +1,7 @@
 //! RaBitQ implementation.
 
 use core::f32;
+use std::ops::Range;
 use std::path::Path;
 
 use log::debug;
@@ -217,11 +218,11 @@ fn kmeans_nearest_cluster(centroids: &DMatrixView<f32>, vec: &DVectorView<f32>) 
 /// Pack the [u64] binary vectors to [u8] and shuffle the low-4 bits and high-4 bits.
 fn pack_code_from_binary_vec(dim: usize, binary_vec: &[Vec<u64>], pack_code: &mut [u8]) {
     let aligned_num = (binary_vec.len() + 31) / 32 * 32;
-    let mut flatten_binary_u64 = binary_vec
+    let flatten_binary_u64 = binary_vec
         .iter()
         .flat_map(|x| x.iter().copied())
         .collect::<Vec<u64>>();
-    let binary_vec_u8: &[u8] = bytemuck::cast_slice(&mut flatten_binary_u64);
+    let binary_vec_u8: &[u8] = bytemuck::cast_slice(&flatten_binary_u64);
     let block_num = 32;
     let quarter = dim / 4;
     let eighth = dim / 8;
@@ -249,7 +250,7 @@ fn pack_code_from_binary_vec(dim: usize, binary_vec: &[Vec<u64>], pack_code: &mu
 }
 
 /// Build the lookup table for fast scan
-fn pack_lookup_table(quantized: DVectorView<u8>, lookup_table: &mut [u8]) {
+fn pack_lookup_table(quantized: &DVectorView<u8>, lookup_table: &mut [u8]) {
     const MASK: [usize; 16] = [3, 3, 2, 3, 1, 3, 2, 3, 0, 3, 2, 3, 1, 3, 2, 3];
     let mut lookup_table_slice = lookup_table;
     for j in 0..(quantized.len() / 4) {
@@ -422,11 +423,14 @@ impl RaBitQ {
         }
         let length = probe.min(k);
         lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
+        lists.truncate(length);
+        lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+        let fast_scan = true;
         let mut rough_distances = Vec::new();
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
         let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
-        // let mut lookup_table = vec![0u8; self.dim as usize * 4];
+        let mut lookup_table = vec![0u8; self.dim as usize / 4 * 16];
         for &(dist, i) in lists[..length].iter() {
             let (lower_bound, upper_bound) = min_max_residual(
                 &mut residual,
@@ -442,27 +446,136 @@ impl RaBitQ {
                 lower_bound,
                 one_over_delta,
             );
+            let dist_sqrt = dist.sqrt();
+
             binary_vec.iter_mut().for_each(|element| *element = 0);
             vector_binarize_query(&quantized.as_view(), &mut binary_vec);
-            let dist_sqrt = dist.sqrt();
-            for j in self.offsets[i]..self.offsets[i + 1] {
-                let ju = j as usize;
-                let binary_distance =
-                    2 * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
-                        - scalar_sum;
+            lookup_table.iter_mut().for_each(|element| *element = 0);
+            pack_lookup_table(&quantized.as_view(), &mut lookup_table);
+
+            if fast_scan {
+                self.calculate_rough_distances_fast_scan(
+                    &mut rough_distances,
+                    &lookup_table,
+                    dist,
+                    dist_sqrt,
+                    scalar_sum as f32,
+                    lower_bound,
+                    delta,
+                    self.offsets[i]..self.offsets[i + 1],
+                );
+            } else {
+                self.calculate_rough_distances(
+                    &mut rough_distances,
+                    &binary_vec,
+                    dist,
+                    dist_sqrt,
+                    scalar_sum as f32,
+                    lower_bound,
+                    delta,
+                    self.offsets[i]..self.offsets[i + 1],
+                );
+            }
+        }
+
+        METRICS.add_query_count(1);
+        METRICS.add_rough_count(rough_distances.len() as u64);
+        self.rerank(query, &rough_distances, topk)
+    }
+
+    /// Calculate the rough distances.
+    #[allow(clippy::too_many_arguments)]
+    fn calculate_rough_distances(
+        &self,
+        rough_distances: &mut Vec<(f32, u32)>,
+        y_binary_vec: &[u64],
+        y_c_distance_square: f32,
+        y_c_distance: f32,
+        scalar_sum: f32,
+        lower_bound: f32,
+        delta: f32,
+        indexes: Range<u32>,
+    ) {
+        for i in indexes {
+            let iu = i as usize;
+            rough_distances.push((
+                (self.x_c_distance_square[iu]
+                    + y_c_distance_square
+                    + lower_bound * self.factor_ppc[iu]
+                    + (2.0
+                        * asymmetric_binary_dot_product(&self.x_binary_vec[iu], y_binary_vec)
+                            as f32
+                        - scalar_sum)
+                        * self.factor_ip[iu]
+                        * delta
+                    - self.error_bound[iu] * y_c_distance),
+                self.map_ids[iu],
+            ));
+        }
+    }
+
+    /// Calculate the rough distances with fast scan.
+    #[allow(clippy::too_many_arguments)]
+    fn calculate_rough_distances_fast_scan(
+        &self,
+        rough_distances: &mut Vec<(f32, u32)>,
+        lookup_table: &[u8],
+        y_c_distance_square: f32,
+        y_c_distance: f32,
+        scalar_sum: f32,
+        lower_bound: f32,
+        delta: f32,
+        indexes: Range<u32>,
+    ) {
+        let batch_size = 32;
+        let batch_num = (indexes.end - indexes.start) / batch_size;
+        let remaining = indexes.end - indexes.start - batch_num * batch_size;
+        let mut results = vec![0u16; batch_size as usize];
+
+        for i in indexes.clone().step_by(batch_size as usize) {
+            unsafe {
+                crate::simd::accumulate_one_block(
+                    &self.pack_code[self.pack_offsets[i as usize] as usize
+                        ..self.pack_offsets[(i + batch_size) as usize] as usize],
+                    lookup_table,
+                    &mut results,
+                );
+            }
+            for (j, &res) in results.iter().enumerate() {
+                let iu = i as usize + j;
                 rough_distances.push((
-                    (self.x_c_distance_square[ju]
-                        + dist
-                        + lower_bound * self.factor_ppc[ju]
-                        + binary_distance as f32 * self.factor_ip[ju] * delta
-                        - self.error_bound[ju] * dist_sqrt),
-                    self.map_ids[ju],
+                    (self.x_c_distance_square[iu]
+                        + y_c_distance_square
+                        + lower_bound * self.factor_ppc[iu]
+                        + (res as f32 - scalar_sum) * self.factor_ip[iu] * delta
+                        - y_c_distance * self.error_bound[iu]),
+                    self.map_ids[iu],
                 ));
             }
         }
 
-        METRICS.add_rough_count(rough_distances.len() as u64);
-        self.rerank(query, &rough_distances, topk)
+        if remaining > 0 {
+            let i = (indexes.end - remaining) as usize;
+            unsafe {
+                crate::simd::accumulate_one_block(
+                    &self.pack_code[self.pack_offsets[i] as usize
+                        ..self.pack_offsets[i + batch_size as usize] as usize],
+                    lookup_table,
+                    &mut results,
+                );
+            }
+            for (j, &res) in results.iter().enumerate().take(remaining as usize) {
+                let iu = i + j;
+                rough_distances.push((
+                    (self.x_c_distance_square[iu]
+                        + y_c_distance_square
+                        + lower_bound * self.factor_ppc[iu]
+                        + (res as f32 - scalar_sum) * self.factor_ip[iu] * delta
+                        - y_c_distance * self.error_bound[iu]),
+                    self.map_ids[iu],
+                ));
+            }
+        }
     }
 
     /// Rerank the topk nearest neighbors.
@@ -498,7 +611,6 @@ impl RaBitQ {
         }
 
         METRICS.add_precise_count(res.len() as u64);
-        METRICS.add_query_count(1);
         let length = topk.min(res.len());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
         res.truncate(length);
