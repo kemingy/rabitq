@@ -2,12 +2,12 @@
 
 use std::cmp::min;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use nalgebra::debug::RandomOrthogonal;
-use nalgebra::{DMatrix, DVector, Dim, Dyn};
-use num_traits::FromBytes;
+use nalgebra::{DMatrix, DMatrixView, DVector, Dim, Dyn};
+use num_traits::{FromBytes, ToBytes};
 use rand::{thread_rng, Rng};
 
 /// Generate a random orthogonal matrix.
@@ -82,6 +82,67 @@ where
         vecs.push(vec);
     }
     Ok(vecs)
+}
+
+/// Read the u64 vecs file.
+///
+/// This cannot be combined with the `read_vecs` function because Rust doesn't support
+/// using generic type for array length https://github.com/rust-lang/rust/issues/43408.
+pub fn read_u64_vecs(path: &Path) -> std::io::Result<Vec<Vec<u64>>> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut dim_buf = [0u8; 4];
+    let mut val_buf = [0u8; 8];
+    let mut count: usize;
+    let mut vecs = Vec::new();
+    loop {
+        count = reader.read(&mut dim_buf)?;
+        if count == 0 {
+            break;
+        }
+        let dim = u32::from_le_bytes(dim_buf) as usize;
+        let mut vec = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            reader.read_exact(&mut val_buf)?;
+            vec.push(u64::from_le_bytes(val_buf));
+        }
+        vecs.push(vec);
+    }
+    Ok(vecs)
+}
+
+/// Write the fvecs/ivecs file from DMatrix.
+pub fn write_matrix<T>(path: &Path, matrix: &DMatrixView<T>) -> std::io::Result<()>
+where
+    T: Sized + ToBytes,
+{
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for vec in matrix.row_iter() {
+        writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+        for v in vec.iter() {
+            writer.write_all(T::to_le_bytes(v).as_ref())?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+/// Write the fvecs/ivecs file.
+pub fn write_vecs<T>(path: &Path, vecs: &[&Vec<T>]) -> std::io::Result<()>
+where
+    T: Sized + ToBytes,
+{
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for vec in vecs.iter() {
+        writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+        for v in vec.iter() {
+            writer.write_all(T::to_le_bytes(v).as_ref())?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 /// Calculate the recall.

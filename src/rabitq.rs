@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
 use crate::metrics::METRICS;
-use crate::utils::{gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs};
+use crate::utils::{
+    gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs, read_u64_vecs, read_vecs,
+    write_matrix, write_vecs,
+};
 
 /// Convert the vector to binary format and store in a u64 vector.
 fn vector_binarize_u64(vec: &DVectorView<f32>) -> Vec<u64> {
@@ -244,6 +247,75 @@ impl RaBitQ {
             .expect("write json error");
     }
 
+    /// Load from dir.
+    pub fn load_from_dir(path: &Path) -> Self {
+        let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
+        let centroids = matrix_from_fvecs(&path.join("centroids.fvecs"));
+
+        let offsets_ids =
+            read_vecs::<u32>(&path.join("offsets_ids.ivecs")).expect("open offsets_ids error");
+        let offsets = offsets_ids.first().expect("offsets is empty").clone();
+        let map_ids = offsets_ids.last().expect("map_ids is empty").clone();
+
+        let factors = read_vecs::<f32>(&path.join("factors.fvecs")).expect("open factors error");
+        let factor_ip = factors[0].clone();
+        let factor_ppc = factors[1].clone();
+        let error_bound = factors[2].clone();
+        let x_c_distance_square = factors[3].clone();
+
+        let x_binary_vec =
+            read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
+
+        let dim = orthogonal.nrows();
+        let base = matrix_from_fvecs(&path.join("base.fvecs"));
+
+        Self {
+            dim: dim as u32,
+            base,
+            orthogonal,
+            centroids,
+            rand_bias: gen_random_bias(dim),
+            offsets,
+            map_ids,
+            x_binary_vec,
+            x_c_distance_square,
+            error_bound,
+            factor_ip,
+            factor_ppc,
+        }
+    }
+
+    /// Dump to dir.
+    pub fn dump_to_dir(&self, path: &Path) {
+        std::fs::create_dir_all(path).expect("create dir error");
+        write_matrix(&path.join("base.fvecs"), &self.base.as_view()).expect("write base error");
+        write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_view())
+            .expect("write orthogonal error");
+        write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_view())
+            .expect("write centroids error");
+
+        write_vecs(
+            &path.join("offsets_ids.ivecs"),
+            &[&self.offsets, &self.map_ids],
+        )
+        .expect("write offsets_ids error");
+        write_vecs(
+            &path.join("factors.fvecs"),
+            &[
+                &self.factor_ip,
+                &self.factor_ppc,
+                &self.error_bound,
+                &self.x_c_distance_square,
+            ],
+        )
+        .expect("write factors error");
+        write_vecs(
+            &path.join("x_binary_vec.u64vecs"),
+            &self.x_binary_vec.iter().collect::<Vec<_>>(),
+        )
+        .expect("write x_binary_vec error");
+    }
+
     /// Build the RaBitQ model from the base and centroids files.
     pub fn from_path(base_path: &Path, centroid_path: &Path) -> Self {
         let base = matrix_from_fvecs(base_path);
@@ -343,7 +415,7 @@ impl RaBitQ {
     }
 
     /// Query the topk nearest neighbors for the given query.
-    pub fn query_one(&self, query: &DVector<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
+    pub fn query(&self, query: &DVectorView<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
         let y_projected = query.tr_mul(&self.orthogonal).transpose();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
@@ -354,6 +426,8 @@ impl RaBitQ {
         }
         let length = probe.min(k);
         lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
+        lists.truncate(length);
+        lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut rough_distances = Vec::new();
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
@@ -401,7 +475,7 @@ impl RaBitQ {
     /// Rerank the topk nearest neighbors.
     fn rerank(
         &self,
-        query: &DVector<f32>,
+        query: &DVectorView<f32>,
         rough_distances: &[(f32, u32)],
         topk: usize,
     ) -> Vec<(f32, u32)> {

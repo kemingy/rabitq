@@ -29,6 +29,9 @@ struct Args {
     /// topk
     #[argh(option, short = 'k', default = "10")]
     topk: usize,
+    /// saved directory
+    #[argh(option, short = 's')]
+    saved: String,
 }
 
 fn main() {
@@ -42,21 +45,16 @@ fn main() {
     let query_path = Path::new(args.query.as_str());
     let truth_path = Path::new(args.truth.as_str());
 
-    let file_name = format!(
-        "{}-{}",
-        base_path.file_stem().unwrap().to_str().unwrap(),
-        "rabitq.json"
-    );
-    let local_path = Path::new(&file_name);
     let rabitq: RaBitQ;
-    if local_path.is_file() {
+    let local_path = Path::new(args.saved.as_str());
+    if local_path.is_dir() {
         debug!("loading from {:?}...", local_path);
-        rabitq = RaBitQ::load_from_json(&local_path);
+        rabitq = RaBitQ::load_from_dir(local_path);
     } else {
         debug!("training...");
         rabitq = RaBitQ::from_path(base_path, centroids_path);
         debug!("saving to local file: {:?}", local_path);
-        rabitq.dump_to_json(&local_path);
+        rabitq.dump_to_dir(local_path);
     }
 
     let queries = read_vecs::<f32>(query_path).expect("read query error");
@@ -67,7 +65,7 @@ fn main() {
     for (i, query) in queries.iter().enumerate() {
         let query_vec = dvector_from_vec(query.clone());
         let start_time = Instant::now();
-        let res = rabitq.query_one(&query_vec, args.probe, args.topk);
+        let res = rabitq.query(&query_vec.as_view(), args.probe, args.topk);
         total_time += start_time.elapsed().as_secs_f64();
         let ids: Vec<i32> = res.iter().map(|(_, id)| *id as i32).collect();
         recall += calculate_recall(&truth[i], &ids, args.topk);
