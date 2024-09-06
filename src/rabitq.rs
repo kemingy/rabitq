@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
 use crate::metrics::METRICS;
-use crate::utils::{gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs};
+use crate::utils::{gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs, write_matrix};
 
 /// Convert the vector to binary format and store in a u64 vector.
 fn vector_binarize_u64(vec: &DVectorView<f32>) -> Vec<u64> {
@@ -229,6 +229,8 @@ pub struct RaBitQ {
     error_bound: Vec<f32>,
     factor_ip: Vec<f32>,
     factor_ppc: Vec<f32>,
+    // #[serde(skip)]
+    // condvar: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl RaBitQ {
@@ -242,6 +244,108 @@ impl RaBitQ {
     pub fn dump_to_json(&self, path: &impl AsRef<Path>) {
         std::fs::write(path, serde_json::to_string(&self).expect("serialize error"))
             .expect("write json error");
+    }
+
+    /// Load from dir.
+    pub fn load_from_dir(path: &Path) -> Self {
+        let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
+        let centroids = matrix_from_fvecs(&path.join("centroids.fvecs"));
+        let offsets: Vec<u32> = serde_json::from_slice(
+            &std::fs::read(path.join("offsets.json")).expect("open offsets error"),
+        )
+        .expect("deserialize offsets error");
+        let map_ids: Vec<u32> = serde_json::from_slice(
+            &std::fs::read(path.join("map_ids.json")).expect("open map_ids error"),
+        )
+        .expect("deserialize map_ids error");
+        let x_binary_vec: Vec<Vec<u64>> = serde_json::from_slice(
+            &std::fs::read(path.join("x_binary_vec.json")).expect("open x_binary_vec error"),
+        )
+        .expect("deserialize x_binary_vec error");
+        let x_c_distance_square: Vec<f32> = serde_json::from_slice(
+            &std::fs::read(path.join("x_c_distance_square.json"))
+                .expect("open x_c_distance_square error"),
+        )
+        .expect("deserialize x_c_distance_square error");
+        let error_bound: Vec<f32> = serde_json::from_slice(
+            &std::fs::read(path.join("error_bound.json")).expect("open error_bound error"),
+        )
+        .expect("deserialize error_bound error");
+        let factor_ip: Vec<f32> = serde_json::from_slice(
+            &std::fs::read(path.join("factor_ip.json")).expect("open factor_ip error"),
+        )
+        .expect("deserialize factor_ip error");
+        let factor_ppc: Vec<f32> = serde_json::from_slice(
+            &std::fs::read(path.join("factor_ppc.json")).expect("open factor_ppc error"),
+        )
+        .expect("deserialize factor_ppc error");
+
+        let dim = orthogonal.nrows();
+        let base = matrix_from_fvecs(&path.join("base.fvecs"));
+        // let base = DMatrix::zeros(map_ids.len(), dim);
+        // let condvar = Arc::new((Mutex::new(false), Condvar::new()));
+        // let condvar_clone = Arc::clone(&condvar);
+
+        Self {
+            dim: dim as u32,
+            base,
+            orthogonal,
+            centroids,
+            rand_bias: gen_random_bias(dim),
+            offsets,
+            map_ids,
+            x_binary_vec,
+            x_c_distance_square,
+            error_bound,
+            factor_ip,
+            factor_ppc,
+        }
+    }
+
+    /// Dump to dir.
+    pub fn dump_to_dir(&self, path: &Path) {
+        std::fs::create_dir_all(path).expect("create dir error");
+        write_matrix(&path.join("base.fvecs"), &self.base.as_view()).expect("write base error");
+        write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_view())
+            .expect("write orthogonal error");
+        write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_view())
+            .expect("write centroids error");
+        std::fs::write(
+            path.join("offsets.json"),
+            serde_json::to_string(&self.offsets).expect("serialize offsets error"),
+        )
+        .expect("write offsets error");
+        std::fs::write(
+            path.join("map_ids.json"),
+            serde_json::to_string(&self.map_ids).expect("serialize map_ids error"),
+        )
+        .expect("write map_ids error");
+        std::fs::write(
+            path.join("x_binary_vec.json"),
+            serde_json::to_string(&self.x_binary_vec).expect("serialize x_binary_vec error"),
+        )
+        .expect("write x_binary_vec error");
+        std::fs::write(
+            path.join("x_c_distance_square.json"),
+            serde_json::to_string(&self.x_c_distance_square)
+                .expect("serialize x_c_distance_square error"),
+        )
+        .expect("write x_c_distance_square error");
+        std::fs::write(
+            path.join("error_bound.json"),
+            serde_json::to_string(&self.error_bound).expect("serialize error_bound error"),
+        )
+        .expect("write error_bound error");
+        std::fs::write(
+            path.join("factor_ip.json"),
+            serde_json::to_string(&self.factor_ip).expect("serialize factor_ip error"),
+        )
+        .expect("write factor_ip error");
+        std::fs::write(
+            path.join("factor_ppc.json"),
+            serde_json::to_string(&self.factor_ppc).expect("serialize factor_ppc error"),
+        )
+        .expect("write factor_ppc error");
     }
 
     /// Build the RaBitQ model from the base and centroids files.
@@ -343,7 +447,7 @@ impl RaBitQ {
     }
 
     /// Query the topk nearest neighbors for the given query.
-    pub fn query_one(&self, query: &DVector<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
+    pub fn query(&self, query: &DVectorView<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
         let y_projected = query.tr_mul(&self.orthogonal).transpose();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
@@ -354,6 +458,8 @@ impl RaBitQ {
         }
         let length = probe.min(k);
         lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
+        lists.truncate(length);
+        lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut rough_distances = Vec::new();
         let mut quantized = DVector::<u8>::zeros(self.dim as usize);
@@ -401,7 +507,7 @@ impl RaBitQ {
     /// Rerank the topk nearest neighbors.
     fn rerank(
         &self,
-        query: &DVector<f32>,
+        query: &DVectorView<f32>,
         rough_distances: &[(f32, u32)],
         topk: usize,
     ) -> Vec<(f32, u32)> {
@@ -436,5 +542,127 @@ impl RaBitQ {
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
         res.truncate(length);
         res
+    }
+}
+
+/// RaBitQ node that mainly used for query.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RaBitQNode {
+    centroid: DVector<f32>,
+    x_raw_vec: DMatrix<f32>,
+    x_binary_vec: Vec<Vec<u64>>,
+    x_c_distance_square: Vec<f32>,
+    error_bound: Vec<f32>,
+    factor_ip: Vec<f32>,
+    factor_ppc: Vec<f32>,
+    map_ids: Vec<u32>,
+}
+
+impl RaBitQNode {
+    /// Create a new RaBitQ node.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        centroid: DVector<f32>,
+        x_raw_vec: DMatrix<f32>,
+        x_binary_vec: Vec<Vec<u64>>,
+        x_c_distance_square: Vec<f32>,
+        error_bound: Vec<f32>,
+        factor_ip: Vec<f32>,
+        factor_ppc: Vec<f32>,
+        map_ids: Vec<u32>,
+    ) -> Self {
+        Self {
+            centroid,
+            x_raw_vec,
+            x_binary_vec,
+            x_c_distance_square,
+            error_bound,
+            factor_ip,
+            factor_ppc,
+            map_ids,
+        }
+    }
+
+    fn dim(&self) -> usize {
+        self.x_raw_vec.nrows()
+    }
+
+    fn num(&self) -> usize {
+        self.x_raw_vec.ncols()
+    }
+
+    /// Query the RaBitQ node with the given vector.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query(
+        &self,
+        query: &DVectorView<f32>,
+        projected: &DVectorView<f32>,
+        y_c_distance_square: f32,
+        threshold: &mut f32,
+        rand_bias: &DVectorView<f32>,
+        results: &mut Vec<(f32, u32)>,
+        residual: &mut DVector<f32>,
+        quantized: &mut DVector<u8>,
+        binary_vec: &mut [u64],
+    ) {
+        let mut rough_distances = Vec::with_capacity(self.num());
+
+        let (lower_bound, upper_bound) =
+            min_max_residual(residual, projected, &self.centroid.as_view());
+        let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
+        let one_over_delta = 1.0 / delta;
+        let scalar_sum = scalar_quantize(
+            quantized,
+            &residual.as_view(),
+            &rand_bias.as_view(),
+            lower_bound,
+            one_over_delta,
+        );
+        vector_binarize_query(&quantized.as_view(), binary_vec);
+        let dist_sqrt = y_c_distance_square.sqrt();
+
+        for i in 0..self.num() {
+            rough_distances.push((
+                (self.x_c_distance_square[i]
+                    + y_c_distance_square
+                    + lower_bound * self.factor_ppc[i]
+                    + (2.0
+                        * asymmetric_binary_dot_product(&self.x_binary_vec[i], binary_vec) as f32
+                        - scalar_sum as f32)
+                        * self.factor_ip[i]
+                        * delta
+                    - self.error_bound[i] * dist_sqrt),
+                self.map_ids[i],
+            ));
+        }
+        self.re_rank(query, &rough_distances, results, threshold);
+    }
+
+    fn re_rank(
+        &self,
+        query: &DVectorView<f32>,
+        rough_distances: &[(f32, u32)],
+        results: &mut Vec<(f32, u32)>,
+        threshold: &mut f32,
+    ) {
+        let mut recent_max_accurate = f32::MIN;
+        let mut count = 0;
+        let mut residual = DVector::<f32>::zeros(self.dim());
+
+        for (i, &(rough, u)) in rough_distances.iter().enumerate() {
+            if rough < *threshold {
+                let accurate = l2_squared_distance(&self.x_raw_vec.column(i), query, &mut residual);
+                if accurate < *threshold {
+                    results.push((accurate, u));
+                    count += 1;
+                    recent_max_accurate = recent_max_accurate.max(accurate);
+                    if count == WINDOWS_SIZE {
+                        *threshold = recent_max_accurate;
+                        count = 0;
+                        recent_max_accurate = f32::MIN;
+                    }
+                }
+            }
+        }
     }
 }

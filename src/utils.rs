@@ -2,12 +2,12 @@
 
 use std::cmp::min;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use nalgebra::debug::RandomOrthogonal;
-use nalgebra::{DMatrix, DVector, Dim, Dyn};
-use num_traits::FromBytes;
+use nalgebra::{DMatrix, DMatrixView, DVector, Dim, Dyn};
+use num_traits::{FromBytes, ToBytes};
 use rand::{thread_rng, Rng};
 
 /// Generate a random orthogonal matrix.
@@ -82,6 +82,40 @@ where
         vecs.push(vec);
     }
     Ok(vecs)
+}
+
+/// Write the fvecs/ivecs file from DMatrix.
+pub fn write_matrix<T>(path: &Path, matrix: &DMatrixView<T>) -> std::io::Result<()>
+where
+    T: Sized + ToBytes<Bytes = [u8; 4]>,
+{
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for vec in matrix.row_iter() {
+        writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+        for v in vec.iter() {
+            writer.write_all(&T::to_le_bytes(v))?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+/// Write the fvecs/ivecs file.
+pub fn write_vecs<T>(path: &Path, vecs: &[Vec<T>]) -> std::io::Result<()>
+where
+    T: Sized + ToBytes<Bytes = [u8; 4]>,
+{
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for vec in vecs.iter() {
+        writer.write_all(&vec.len().to_le_bytes())?;
+        for v in vec.iter() {
+            writer.write_all(&T::to_le_bytes(v))?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 /// Calculate the recall.
