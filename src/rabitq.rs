@@ -380,6 +380,14 @@ impl RaBitQ {
             offsets[i + 1] = offsets[i] + labels[i].len() as u32;
         }
         let flat_labels: Vec<u32> = labels.into_iter().flatten().collect();
+        let base = DMatrix::from_row_iterator(
+            flat_labels.len(),
+            dim,
+            flat_labels
+                .iter()
+                .flat_map(|&i| base.row(i as usize).iter().copied().collect::<Vec<_>>()),
+        )
+        .transpose();
         let x_binary_vec = flat_labels
             .iter()
             .map(|i| x_binary_vec[*i as usize].clone())
@@ -400,7 +408,7 @@ impl RaBitQ {
 
         Self {
             dim: dim as u32,
-            base: base.transpose(),
+            base,
             orthogonal,
             rand_bias,
             offsets,
@@ -463,12 +471,11 @@ impl RaBitQ {
                             * self.factor_ip[ju]
                             * delta
                         - self.error_bound[ju] * dist_sqrt),
-                    self.map_ids[ju],
+                    j,
                 ));
             }
         }
 
-        METRICS.add_rough_count(rough_distances.len() as u64);
         self.rerank(query, &rough_distances, topk)
     }
 
@@ -492,7 +499,7 @@ impl RaBitQ {
                     &mut residual,
                 );
                 if accurate < threshold {
-                    res.push((accurate, u));
+                    res.push((accurate, self.map_ids[u as usize]));
                     count += 1;
                     recent_max_accurate = recent_max_accurate.max(accurate);
                     if count == WINDOWS_SIZE {
@@ -505,6 +512,7 @@ impl RaBitQ {
         }
 
         METRICS.add_precise_count(res.len() as u64);
+        METRICS.add_rough_count(rough_distances.len() as u64);
         METRICS.add_query_count(1);
         let length = topk.min(res.len());
         res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
