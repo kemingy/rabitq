@@ -6,13 +6,14 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use bytes::Buf;
-use foyer::{DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder};
+// use foyer::{DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder};
 use nalgebra::{DVector, DVectorView};
+use quick_cache::sync::Cache;
 
 use crate::consts::BLOCK_BYTE_LIMIT;
 use crate::simd::l2_squared_distance;
@@ -67,7 +68,8 @@ pub struct CachedVector {
     s3_bucket: String,
     s3_key: String,
     s3_client: Client,
-    cache: HybridCache<u32, DVector<f32>>,
+    // cache: HybridCache<u32, DVector<f32>>,
+    cache: Arc<Cache<u32, Arc<DVector<f32>>>>,
 }
 
 impl CachedVector {
@@ -78,7 +80,7 @@ impl CachedVector {
         local_path: String,
         s3_bucket: String,
         s3_prefix: String,
-        mem_cache_mb: u32,
+        mem_cache_num: u32,
         disk_cache_mb: u32,
     ) -> Self {
         let num_per_block = BLOCK_BYTE_LIMIT / 4 / (dim + 1);
@@ -94,17 +96,18 @@ impl CachedVector {
             num_per_block,
             s3_bucket,
             s3_key: format!("{}/centroids.fvecs", s3_prefix),
-            cache: HybridCacheBuilder::new()
-                .memory(mem_cache_mb as usize * 1024 * 1024)
-                .storage()
-                .with_device_config(
-                    DirectFsDeviceOptionsBuilder::new(local_path.clone())
-                        .with_capacity(disk_cache_mb as usize * 1024 * 1024)
-                        .build(),
-                )
-                .build()
-                .await
-                .expect("failed to create cache"),
+            // cache: HybridCacheBuilder::new()
+            //     .memory(mem_cache_num as usize * 1024 * 1024)
+            //     .storage()
+            //     .with_device_config(
+            //         DirectFsDeviceOptionsBuilder::new(local_path.clone())
+            //             .with_capacity(disk_cache_mb as usize * 1024 * 1024)
+            //             .build(),
+            //     )
+            //     .build()
+            //     .await
+            //     .expect("failed to create cache"),
+            cache: Arc::new(Cache::new(mem_cache_num as usize)),
             s3_client,
         }
     }
@@ -135,7 +138,7 @@ impl CachedVector {
         let block_offset = index as u32 / self.num_per_block;
         for (i, vec) in vecs.into_iter().enumerate() {
             self.cache
-                .insert(block_offset * self.num_per_block + i as u32, vec);
+                .insert(block_offset * self.num_per_block + i as u32, Arc::new(vec));
         }
 
         Ok(())
@@ -147,18 +150,28 @@ impl CachedVector {
         index: usize,
         query: &DVectorView<'_, f32>,
     ) -> anyhow::Result<f32> {
-        if !self.cache.contains(&(index as u32)) {
-            self.fetch_from_s3(index)
-                .await
-                .expect("failed to fetch from s3");
-        }
-        let entry = self
-            .cache
-            .get(&(index as u32))
-            .await?
-            .expect("entry is empty");
+        // if !self.cache.contains(&(index as u32)) {
+        //     self.fetch_from_s3(index)
+        //         .await
+        //         .expect("failed to fetch from s3");
+        // }
+        // let entry = self
+        //     .cache
+        //     .get(&(index as u32))
+        //     .await?
+        //     .expect("entry is empty");
 
-        Ok(unsafe { l2_squared_distance(&entry.value().as_view(), query) })
+        if let Some(entry) = self.cache.get(&(index as u32)) {
+            return Ok(unsafe { l2_squared_distance(&entry.as_view(), query) });
+        }
+        self.fetch_from_s3(index)
+            .await
+            .expect("failed to fetch from s3");
+
+        if let Some(entry) = self.cache.get(&(index as u32)) {
+            return Ok(unsafe { l2_squared_distance(&entry.as_view(), query) });
+        }
+        Err(anyhow::anyhow!("failed to get entry"))
     }
 }
 
