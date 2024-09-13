@@ -7,7 +7,8 @@ use log::debug;
 use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
 use serde::{Deserialize, Serialize};
 
-use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
+use crate::cache::CACHED_VECTOR;
+use crate::consts::{DEFAULT_X_DOT_PRODUCT, DELTA_SCALAR, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
 use crate::metrics::METRICS;
 use crate::utils::{
     gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs, read_u64_vecs, read_vecs,
@@ -247,6 +248,16 @@ impl RaBitQ {
             .expect("write json error");
     }
 
+    /// Get the dimension of the raw vectors.
+    pub fn dim(&self) -> u32 {
+        self.dim
+    }
+
+    /// Get the total number of vectors.
+    pub fn num(&self) -> u32 {
+        self.map_ids.len() as u32
+    }
+
     /// Load from dir.
     pub fn load_from_dir(path: &Path) -> Self {
         let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
@@ -267,7 +278,7 @@ impl RaBitQ {
             read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
 
         let dim = orthogonal.nrows();
-        let base = matrix_from_fvecs(&path.join("base.fvecs"));
+        let base = matrix_from_fvecs(&path.join("base.fvecs")).transpose();
 
         Self {
             dim: dim as u32,
@@ -285,10 +296,48 @@ impl RaBitQ {
         }
     }
 
+    /// Load from dir with cache.
+    pub fn load_from_dir_with_cache(path: &Path) -> Self {
+        let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
+        let centroids = matrix_from_fvecs(&path.join("centroids.fvecs"));
+
+        let offsets_ids =
+            read_vecs::<u32>(&path.join("offsets_ids.ivecs")).expect("open offsets_ids error");
+        let offsets = offsets_ids.first().expect("offsets is empty").clone();
+        let map_ids = offsets_ids.last().expect("map_ids is empty").clone();
+
+        let factors = read_vecs::<f32>(&path.join("factors.fvecs")).expect("open factors error");
+        let factor_ip = factors[0].clone();
+        let factor_ppc = factors[1].clone();
+        let error_bound = factors[2].clone();
+        let x_c_distance_square = factors[3].clone();
+
+        let x_binary_vec =
+            read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
+
+        let dim = orthogonal.nrows();
+
+        Self {
+            dim: dim as u32,
+            base: DMatrix::zeros(0, 0), // set to a dummy value since we will use cache
+            orthogonal,
+            centroids,
+            rand_bias: gen_random_bias(dim),
+            offsets,
+            map_ids,
+            x_binary_vec,
+            x_c_distance_square,
+            error_bound,
+            factor_ip,
+            factor_ppc,
+        }
+    }
+
     /// Dump to dir.
     pub fn dump_to_dir(&self, path: &Path) {
         std::fs::create_dir_all(path).expect("create dir error");
-        write_matrix(&path.join("base.fvecs"), &self.base.as_view()).expect("write base error");
+        write_matrix(&path.join("base.fvecs"), &self.base.transpose().as_view())
+            .expect("write base error");
         write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_view())
             .expect("write orthogonal error");
         write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_view())
@@ -446,7 +495,7 @@ impl RaBitQ {
                 &y_projected.as_view(),
                 &self.centroids.column(i),
             );
-            let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
+            let delta = (upper_bound - lower_bound) / DELTA_SCALAR;
             let one_over_delta = 1.0 / delta;
             let scalar_sum = scalar_quantize(
                 &mut quantized,
@@ -498,6 +547,114 @@ impl RaBitQ {
                     &query.as_view(),
                     &mut residual,
                 );
+                if accurate < threshold {
+                    res.push((accurate, self.map_ids[u as usize]));
+                    count += 1;
+                    recent_max_accurate = recent_max_accurate.max(accurate);
+                    if count == WINDOWS_SIZE {
+                        threshold = recent_max_accurate;
+                        count = 0;
+                        recent_max_accurate = f32::MIN;
+                    }
+                }
+            }
+        }
+
+        METRICS.add_precise_count(res.len() as u64);
+        METRICS.add_rough_count(rough_distances.len() as u64);
+        METRICS.add_query_count(1);
+        let length = topk.min(res.len());
+        res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
+        res.truncate(length);
+        res
+    }
+
+    /// Query the topk nearest neighbors for the given query asynchronously.
+    pub async fn query_async(
+        &self,
+        query: &DVectorView<'_, f32>,
+        probe: usize,
+        topk: usize,
+    ) -> Vec<(f32, u32)> {
+        let y_projected = query.tr_mul(&self.orthogonal).transpose();
+        let k = self.centroids.shape().1;
+        let mut lists = Vec::with_capacity(k);
+        let mut residual = DVector::<f32>::zeros(self.dim as usize);
+        for (i, centroid) in self.centroids.column_iter().enumerate() {
+            let dist = l2_squared_distance(&centroid, &y_projected.as_view(), &mut residual);
+            lists.push((dist, i));
+        }
+        let length = probe.min(k);
+        lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
+        lists.truncate(length);
+        lists.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut rough_distances = Vec::new();
+        let mut quantized = DVector::<u8>::zeros(self.dim as usize);
+        let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
+        for &(dist, i) in lists[..length].iter() {
+            let (lower_bound, upper_bound) = min_max_residual(
+                &mut residual,
+                &y_projected.as_view(),
+                &self.centroids.column(i),
+            );
+            let delta = (upper_bound - lower_bound) / DELTA_SCALAR;
+            let one_over_delta = 1.0 / delta;
+            let scalar_sum = scalar_quantize(
+                &mut quantized,
+                &residual.as_view(),
+                &self.rand_bias.as_view(),
+                lower_bound,
+                one_over_delta,
+            );
+            binary_vec.iter_mut().for_each(|element| *element = 0);
+            vector_binarize_query(&quantized.as_view(), &mut binary_vec);
+            let dist_sqrt = dist.sqrt();
+            for j in self.offsets[i]..self.offsets[i + 1] {
+                let ju = j as usize;
+                rough_distances.push((
+                    (self.x_c_distance_square[ju]
+                        + dist
+                        + lower_bound * self.factor_ppc[ju]
+                        + (2.0
+                            * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
+                                as f32
+                            - scalar_sum as f32)
+                            * self.factor_ip[ju]
+                            * delta
+                        - self.error_bound[ju] * dist_sqrt),
+                    j,
+                ));
+            }
+        }
+
+        self.rerank_async(query, &rough_distances, topk).await
+    }
+
+    async fn rerank_async(
+        &self,
+        query: &DVectorView<'_, f32>,
+        rough_distances: &[(f32, u32)],
+        topk: usize,
+    ) -> Vec<(f32, u32)> {
+        let mut threshold = f32::MAX;
+        let mut recent_max_accurate = f32::MIN;
+        let mut res = Vec::with_capacity(topk);
+        let mut count = 0;
+        // let mut residual = DVector::<f32>::zeros(self.dim as usize);
+        for &(rough, u) in rough_distances.iter() {
+            if rough < threshold {
+                // let accurate = l2_squared_distance(
+                //     &self.base.column(u as usize),
+                //     &query.as_view(),
+                //     &mut residual,
+                // );
+                let accurate = CACHED_VECTOR
+                    .get()
+                    .expect("cached vector is not initialized")
+                    .get_l2_squared_distance(u as usize, query)
+                    .await
+                    .expect("get l2 squared distance error");
                 if accurate < threshold {
                     res.push((accurate, self.map_ids[u as usize]));
                     count += 1;

@@ -10,8 +10,13 @@ keywords = ["vector-search", "quantization", "binary-dot-product"]
 categories = ["algorithms", "science"]
 
 [dependencies]
+anyhow = "1.0.87"
 argh = "0.1.12"
+aws-config = "1.5.5"
+aws-sdk-s3 = "1.48.0"
+bytes = "1.7.1"
 env_logger = "0.11.5"
+foyer = "0.11.1"
 log = "0.4.22"
 nalgebra = {version = "0.33.0", features = ["debug", "serde-serialize"]}
 num-traits = "0.2.19"

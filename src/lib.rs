@@ -1,6 +1,7 @@
 //! RaBitQ implementation in Rust.
 
 #![forbid(missing_docs)]
+pub mod cache;
 mod consts;
 pub mod metrics;
 pub mod rabitq;
