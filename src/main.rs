@@ -32,6 +32,9 @@ struct Args {
     /// saved directory
     #[argh(option, short = 's')]
     saved: String,
+    /// heuristic re-rank
+    #[argh(switch, short = 'h')]
+    heuristic_rank: bool,
 }
 
 fn main() {
@@ -65,7 +68,12 @@ fn main() {
     for (i, query) in queries.iter().enumerate() {
         let query_vec = dvector_from_vec(query.clone());
         let start_time = Instant::now();
-        let res = rabitq.query(&query_vec.as_view(), args.probe, args.topk);
+        let res = rabitq.query(
+            &query_vec.as_view(),
+            args.probe,
+            args.topk,
+            args.heuristic_rank,
+        );
         total_time += start_time.elapsed().as_secs_f64();
         let ids: Vec<i32> = res.iter().map(|(_, id)| *id as i32).collect();
         recall += calculate_recall(&truth[i], &ids, args.topk);

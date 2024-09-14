@@ -1,6 +1,7 @@
 //! RaBitQ implementation.
 
 use core::f32;
+use std::collections::BinaryHeap;
 use std::path::Path;
 
 use log::debug;
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
 use crate::metrics::METRICS;
+use crate::order::Ord32;
 use crate::utils::{
     gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs, read_u64_vecs, read_vecs,
     write_matrix, write_vecs,
@@ -267,7 +269,7 @@ impl RaBitQ {
             read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
 
         let dim = orthogonal.nrows();
-        let base = matrix_from_fvecs(&path.join("base.fvecs"));
+        let base = matrix_from_fvecs(&path.join("base.fvecs")).transpose();
 
         Self {
             dim: dim as u32,
@@ -288,7 +290,8 @@ impl RaBitQ {
     /// Dump to dir.
     pub fn dump_to_dir(&self, path: &Path) {
         std::fs::create_dir_all(path).expect("create dir error");
-        write_matrix(&path.join("base.fvecs"), &self.base.as_view()).expect("write base error");
+        write_matrix(&path.join("base.fvecs"), &self.base.transpose().as_view())
+            .expect("write base error");
         write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_view())
             .expect("write orthogonal error");
         write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_view())
@@ -423,7 +426,13 @@ impl RaBitQ {
     }
 
     /// Query the topk nearest neighbors for the given query.
-    pub fn query(&self, query: &DVectorView<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
+    pub fn query(
+        &self,
+        query: &DVectorView<f32>,
+        probe: usize,
+        topk: usize,
+        heuristic_rank: bool,
+    ) -> Vec<(f32, u32)> {
         let y_projected = query.tr_mul(&self.orthogonal).transpose();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
@@ -476,11 +485,53 @@ impl RaBitQ {
             }
         }
 
-        self.rerank(query, &rough_distances, topk)
+        if heuristic_rank {
+            self.heuristic_re_rank(query, &rough_distances, topk)
+        } else {
+            self.re_rank(query, &rough_distances, topk)
+        }
     }
 
-    /// Rerank the topk nearest neighbors.
-    fn rerank(
+    /// BinaryHeap based re-rank with Ord32.
+    fn re_rank(
+        &self,
+        query: &DVectorView<f32>,
+        rough_distances: &[(f32, u32)],
+        topk: usize,
+    ) -> Vec<(f32, u32)> {
+        let mut threshold = f32::MAX;
+        let mut precise = 0;
+        let mut residual = DVector::<f32>::zeros(self.dim as usize);
+        let mut heap: BinaryHeap<(Ord32, u32)> = BinaryHeap::with_capacity(topk);
+        for &(rough, u) in rough_distances.iter() {
+            if rough < threshold {
+                let accurate = l2_squared_distance(
+                    &self.base.column(u as usize),
+                    &query.as_view(),
+                    &mut residual,
+                );
+                precise += 1;
+                if accurate < threshold {
+                    heap.push((accurate.into(), self.map_ids[u as usize]));
+                    if heap.len() > topk {
+                        heap.pop();
+                    }
+                    if heap.len() == topk {
+                        threshold = heap.peek().unwrap().0.into();
+                    }
+                }
+            }
+        }
+
+        METRICS.add_precise_count(precise);
+        METRICS.add_rough_count(rough_distances.len() as u64);
+        METRICS.add_query_count(1);
+
+        heap.into_iter().map(|(a, b)| (a.into(), b)).collect()
+    }
+
+    /// Heuristic re-rank with a fixed windows size to update the threshold.
+    fn heuristic_re_rank(
         &self,
         query: &DVectorView<f32>,
         rough_distances: &[(f32, u32)],
@@ -491,6 +542,7 @@ impl RaBitQ {
         let mut res = Vec::with_capacity(topk);
         let mut count = 0;
         let mut residual = DVector::<f32>::zeros(self.dim as usize);
+        let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
                 let accurate = l2_squared_distance(
@@ -498,11 +550,12 @@ impl RaBitQ {
                     &query.as_view(),
                     &mut residual,
                 );
+                precise += 1;
                 if accurate < threshold {
                     res.push((accurate, self.map_ids[u as usize]));
                     count += 1;
                     recent_max_accurate = recent_max_accurate.max(accurate);
-                    if count == WINDOWS_SIZE {
+                    if count >= WINDOWS_SIZE {
                         threshold = recent_max_accurate;
                         count = 0;
                         recent_max_accurate = f32::MIN;
@@ -511,7 +564,7 @@ impl RaBitQ {
             }
         }
 
-        METRICS.add_precise_count(res.len() as u64);
+        METRICS.add_precise_count(precise);
         METRICS.add_rough_count(rough_distances.len() as u64);
         METRICS.add_query_count(1);
         let length = topk.min(res.len());
