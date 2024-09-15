@@ -7,7 +7,7 @@ use faer::{Col, ColRef, Mat, Row};
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM};
+use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, SCALAR, THETA_LOG_DIM};
 use crate::metrics::METRICS;
 use crate::rerank::new_re_ranker;
 use crate::utils::{
@@ -247,8 +247,8 @@ impl RaBitQ {
         for &(dist, i) in lists[..length].iter() {
             let (lower_bound, upper_bound) =
                 min_max_residual(&mut residual, &y_projected.as_ref(), &self.centroids.col(i));
-            let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
-            let one_over_delta = 1.0 / delta;
+            let delta = (upper_bound - lower_bound) * SCALAR;
+            let one_over_delta = delta.recip();
             let scalar_sum = scalar_quantize(
                 &mut quantized,
                 &residual,

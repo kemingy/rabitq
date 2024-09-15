@@ -32,7 +32,7 @@ struct Args {
     /// saved directory
     #[argh(option, short = 's')]
     saved: String,
-    /// heuristic re-rank
+    /// heuristic re-rank (maybe faster when topk is large)
     #[argh(switch, short = 'h')]
     heuristic_rank: bool,
 }
