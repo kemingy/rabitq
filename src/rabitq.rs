@@ -1,212 +1,21 @@
 //! RaBitQ implementation.
 
 use core::f32;
-use std::collections::BinaryHeap;
 use std::path::Path;
 
-use faer::{Col, ColRef, Mat, MatRef, Row};
+use faer::{Col, ColRef, Mat, Row};
 use log::debug;
-// use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
 use serde::{Deserialize, Serialize};
 
-use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
+use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM};
 use crate::metrics::METRICS;
-use crate::order::Ord32;
+use crate::rerank::new_re_ranker;
 use crate::utils::{
-    gen_random_bias, gen_random_qr_orthogonal, matrix_from_fvecs, read_u64_vecs, read_vecs,
-    write_matrix, write_vecs,
+    asymmetric_binary_dot_product, gen_random_bias, gen_random_qr_orthogonal,
+    kmeans_nearest_cluster, l2_squared_distance, matrix_from_fvecs, min_max_residual, project,
+    read_u64_vecs, read_vecs, scalar_quantize, vector_binarize_one, vector_binarize_query,
+    vector_binarize_u64, write_matrix, write_vecs,
 };
-
-/// Convert the vector to binary format and store in a u64 vector.
-fn vector_binarize_u64(vec: &ColRef<f32>) -> Vec<u64> {
-    let mut binary = vec![0u64; (vec.nrows() + 63) / 64];
-    for (i, &v) in vec.iter().enumerate() {
-        if v > 0.0 {
-            binary[i / 64] |= 1 << (i % 64);
-        }
-    }
-    binary
-}
-
-/// Convert the vector to +1/-1 format.
-#[inline]
-fn vector_binarize_one(vec: &ColRef<f32>) -> Col<f32> {
-    Col::from_fn(vec.nrows(), |i| if vec[i] > 0.0 { 1.0 } else { -1.0 })
-}
-
-/// Interface of `vector_binarize_query`
-fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                crate::simd::vector_binarize_query(vec, binary);
-            }
-        } else {
-            vector_binarize_query_raw(vec, binary);
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        vector_binarize_query_raw(vec, binary);
-    }
-}
-
-/// Convert the vector to binary format (one value to multiple bits) and store in a u64 vector.
-#[inline]
-fn vector_binarize_query_raw(vec: &[u8], binary: &mut [u64]) {
-    let length = vec.len();
-    for j in 0..THETA_LOG_DIM as usize {
-        for i in 0..length {
-            binary[(i + j * length) / 64] |= (((vec[i] >> j) & 1) as u64) << (i % 64);
-        }
-    }
-}
-
-/// Calculate the dot product of two binary vectors.
-#[inline]
-fn binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
-    let mut res = 0;
-    for i in 0..x.len() {
-        res += (x[i] & y[i]).count_ones();
-    }
-    res
-}
-
-/// Calculate the dot product of two binary vectors with different lengths.
-///
-/// The length of `y` should be `x.len() * THETA_LOG_DIM`.
-fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
-    let mut res = 0;
-    let length = x.len();
-    let mut y_slice = y;
-    for i in 0..THETA_LOG_DIM as usize {
-        res += binary_dot_product(x, y_slice) << i;
-        y_slice = &y_slice[length..];
-    }
-    res
-}
-
-/// Calculate the L2 squared distance between two vectors.
-fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { crate::simd::l2_squared_distance(lhs, rhs) }
-        } else {
-            (lhs - rhs).squared_norm_l2()
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        (lhs - rhs).squared_norm_l2()
-    }
-}
-
-// Get the min/max value of a vector.
-fn min_max_raw(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
-    let mut min = f32::MAX;
-    let mut max = f32::MIN;
-    for i in 0..res.len() {
-        res[i] = x[i] - y[i];
-        if res[i] < min {
-            min = res[i];
-        }
-        if res[i] > max {
-            max = res[i];
-        }
-    }
-    (min, max)
-}
-
-// Interface of `min_max_residual`
-fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx") {
-            unsafe { crate::simd::min_max_residual(res, x, y) }
-        } else {
-            min_max_raw(res, x, y)
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        min_max_raw(res, x, y)
-    }
-}
-
-// Quantize the query residual vector.
-fn scalar_quantize_raw(
-    quantized: &mut [u8],
-    vec: &[f32],
-    bias: &[f32],
-    lower_bound: f32,
-    multiplier: f32,
-) -> u32 {
-    let mut sum = 0u32;
-    for i in 0..quantized.len() {
-        let q = ((vec[i] - lower_bound) * multiplier + bias[i]) as u8;
-        quantized[i] = q;
-        sum += q as u32;
-    }
-    sum
-}
-
-// Interface of `scalar_quantize`
-fn scalar_quantize(
-    quantized: &mut [u8],
-    vec: &[f32],
-    bias: &[f32],
-    lower_bound: f32,
-    multiplier: f32,
-) -> u32 {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { crate::simd::scalar_quantize(quantized, vec, lower_bound, multiplier) }
-        } else {
-            scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        scalar_quantize_raw(quantized, vec, bias, lower_bound, multiplier)
-    }
-}
-
-/// Project the vector to the orthogonal matrix.
-#[allow(dead_code)]
-#[inline]
-fn project(vec: &ColRef<f32>, orthogonal: &MatRef<f32>) -> Col<f32> {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            Col::from_fn(orthogonal.ncols(), |i| unsafe {
-                crate::simd::vector_dot_product(vec, &orthogonal.col(i))
-            })
-        } else {
-            (vec.transpose() * orthogonal).transpose().to_owned()
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        (vec.transpose() * orthogonal).transpose().to_owned()
-    }
-}
-
-/// Find the nearest cluster for the given vector.
-fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> usize {
-    let mut min_dist = f32::MAX;
-    let mut min_label = 0;
-    for (j, centroid) in centroids.col_iter().enumerate() {
-        let dist = l2_squared_distance(&centroid, vec);
-        if dist < min_dist {
-            min_dist = dist;
-            min_label = j;
-        }
-    }
-    min_label
-}
 
 /// RaBitQ struct.
 #[derive(Debug, Serialize, Deserialize)]
@@ -431,6 +240,7 @@ impl RaBitQ {
         lists.truncate(length);
         lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+        let mut re_ranker = new_re_ranker(query, topk, heuristic_rank);
         let mut rough_distances = Vec::new();
         let mut quantized = vec![0u8; self.dim as usize];
         let mut binary_vec = vec![0u64; self.dim as usize * THETA_LOG_DIM as usize / 64];
@@ -465,83 +275,11 @@ impl RaBitQ {
                     j,
                 ));
             }
+            re_ranker.rank_batch(&rough_distances, &self.base.as_ref(), &self.map_ids);
+            rough_distances.clear();
         }
 
-        if heuristic_rank {
-            self.heuristic_re_rank(query, &rough_distances, topk)
-        } else {
-            self.re_rank(query, &rough_distances, topk)
-        }
-    }
-
-    /// BinaryHeap based re-rank with Ord32.
-    fn re_rank(
-        &self,
-        query: &ColRef<f32>,
-        rough_distances: &[(f32, u32)],
-        topk: usize,
-    ) -> Vec<(f32, u32)> {
-        let mut threshold = f32::MAX;
-        let mut precise = 0;
-        let mut heap: BinaryHeap<(Ord32, u32)> = BinaryHeap::with_capacity(topk);
-        for &(rough, u) in rough_distances.iter() {
-            if rough < threshold {
-                let accurate = l2_squared_distance(&self.base.col(u as usize), query);
-                precise += 1;
-                if accurate < threshold {
-                    heap.push((accurate.into(), self.map_ids[u as usize]));
-                    if heap.len() > topk {
-                        heap.pop();
-                    }
-                    if heap.len() == topk {
-                        threshold = heap.peek().unwrap().0.into();
-                    }
-                }
-            }
-        }
-
-        METRICS.add_precise_count(precise);
-        METRICS.add_rough_count(rough_distances.len() as u64);
         METRICS.add_query_count(1);
-
-        heap.into_iter().map(|(a, b)| (a.into(), b)).collect()
-    }
-
-    /// Heuristic re-rank with a fixed windows size to update the threshold.
-    fn heuristic_re_rank(
-        &self,
-        query: &ColRef<f32>,
-        rough_distances: &[(f32, u32)],
-        topk: usize,
-    ) -> Vec<(f32, u32)> {
-        let mut threshold = f32::MAX;
-        let mut recent_max_accurate = f32::MIN;
-        let mut res = Vec::with_capacity(topk);
-        let mut count = 0;
-        let mut precise = 0;
-        for &(rough, u) in rough_distances.iter() {
-            if rough < threshold {
-                let accurate = l2_squared_distance(&self.base.col(u as usize), query);
-                precise += 1;
-                if accurate < threshold {
-                    res.push((accurate, self.map_ids[u as usize]));
-                    count += 1;
-                    recent_max_accurate = recent_max_accurate.max(accurate);
-                    if count >= WINDOWS_SIZE {
-                        threshold = recent_max_accurate;
-                        count = 0;
-                        recent_max_accurate = f32::MIN;
-                    }
-                }
-            }
-        }
-
-        METRICS.add_precise_count(precise);
-        METRICS.add_rough_count(rough_distances.len() as u64);
-        METRICS.add_query_count(1);
-        let length = topk.min(res.len());
-        res.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
-        res.truncate(length);
-        res
+        re_ranker.get_result()
     }
 }
