@@ -5,7 +5,7 @@ use argh::FromArgs;
 use env_logger::Env;
 use log::{debug, info};
 use rabitq::metrics::METRICS;
-use rabitq::utils::{calculate_recall, dvector_from_vec, read_vecs};
+use rabitq::utils::{calculate_recall, matrix1d_from_vec, read_vecs};
 use rabitq::RaBitQ;
 
 #[derive(FromArgs, Debug)]
@@ -66,10 +66,10 @@ fn main() {
     let mut total_time = 0.0;
     let mut recall = 0.0;
     for (i, query) in queries.iter().enumerate() {
-        let query_vec = dvector_from_vec(query.clone());
+        let query_vec = matrix1d_from_vec(query);
         let start_time = Instant::now();
         let res = rabitq.query(
-            &query_vec.as_view(),
+            &query_vec.as_ref(),
             args.probe,
             args.topk,
             args.heuristic_rank,

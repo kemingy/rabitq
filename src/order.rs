@@ -4,6 +4,7 @@
 #[repr(transparent)]
 pub struct Ord32(i32);
 
+/// TODO: mark as const fn when it's stable.
 impl Ord32 {
     #[inline]
     pub fn from_f32(x: f32) -> Self {

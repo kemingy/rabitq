@@ -4,8 +4,9 @@ use core::f32;
 use std::collections::BinaryHeap;
 use std::path::Path;
 
+use faer::{Col, ColRef, Mat, MatRef, Row, RowRef};
 use log::debug;
-use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
+// use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_X_DOT_PRODUCT, EPSILON, THETA_LOG_DIM, WINDOWS_SIZE};
@@ -17,8 +18,8 @@ use crate::utils::{
 };
 
 /// Convert the vector to binary format and store in a u64 vector.
-fn vector_binarize_u64(vec: &DVectorView<f32>) -> Vec<u64> {
-    let mut binary = vec![0u64; (vec.len() + 63) / 64];
+fn vector_binarize_u64(vec: &ColRef<f32>) -> Vec<u64> {
+    let mut binary = vec![0u64; (vec.nrows() + 63) / 64];
     for (i, &v) in vec.iter().enumerate() {
         if v > 0.0 {
             binary[i / 64] |= 1 << (i % 64);
@@ -29,17 +30,17 @@ fn vector_binarize_u64(vec: &DVectorView<f32>) -> Vec<u64> {
 
 /// Convert the vector to +1/-1 format.
 #[inline]
-fn vector_binarize_one(vec: &DVectorView<f32>) -> DVector<f32> {
-    DVector::from_fn(vec.len(), |i, _| if vec[i] > 0.0 { 1.0 } else { -1.0 })
+fn vector_binarize_one(vec: &ColRef<f32>) -> Col<f32> {
+    Col::from_fn(vec.nrows(), |i| if vec[i] > 0.0 { 1.0 } else { -1.0 })
 }
 
 /// Interface of `vector_binarize_query`
-fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
+fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
             unsafe {
-                crate::simd::vector_binarize_query(&vec.as_view(), binary);
+                crate::simd::vector_binarize_query(vec, binary);
             }
         } else {
             vector_binarize_query_raw(vec, binary);
@@ -53,7 +54,7 @@ fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
 
 /// Convert the vector to binary format (one value to multiple bits) and store in a u64 vector.
 #[inline]
-fn vector_binarize_query_raw(vec: &DVectorView<u8>, binary: &mut [u64]) {
+fn vector_binarize_query_raw(vec: &[u8], binary: &mut [u64]) {
     let length = vec.len();
     for j in 0..THETA_LOG_DIM as usize {
         for i in 0..length {
@@ -87,74 +88,63 @@ fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 }
 
 /// Calculate the L2 squared distance between two vectors.
-fn l2_squared_distance(
-    lhs: &DVectorView<f32>,
-    rhs: &DVectorView<f32>,
-    residual: &mut DVector<f32>,
-) -> f32 {
+fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
             unsafe { crate::simd::l2_squared_distance(lhs, rhs) }
         } else {
-            lhs.sub_to(rhs, residual);
-            residual.norm_squared()
+            (lhs - rhs).squared_norm_l2()
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        lhs.sub_to(rhs, residual);
-        residual.norm_squared()
+        (lhs - rhs).squared_norm_l2()
     }
 }
 
 // Get the min/max value of a vector.
-fn min_max_raw(vec: &DVectorView<f32>) -> (f32, f32) {
+fn min_max_raw(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
     let mut min = f32::MAX;
     let mut max = f32::MIN;
-    for v in vec.iter() {
-        if *v < min {
-            min = *v;
+    for i in 0..res.len() {
+        res[i] = x[i] - y[i];
+        if res[i] < min {
+            min = res[i];
         }
-        if *v > max {
-            max = *v;
+        if res[i] > max {
+            max = res[i];
         }
     }
     (min, max)
 }
 
 // Interface of `min_max_residual`
-fn min_max_residual(
-    res: &mut DVector<f32>,
-    x: &DVectorView<f32>,
-    y: &DVectorView<f32>,
-) -> (f32, f32) {
+fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx") {
             unsafe { crate::simd::min_max_residual(res, x, y) }
         } else {
-            x.sub_to(y, res);
-            min_max_raw(&res.as_view())
+            min_max_raw(res, x, y)
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        x.sub_to(y, &mut res);
-        min_max_raw(&res.as_view())
+        min_max_raw(res, x, y)
     }
 }
 
 // Quantize the query residual vector.
 fn scalar_quantize_raw(
-    quantized: &mut DVector<u8>,
-    vec: &DVectorView<f32>,
-    bias: &DVectorView<f32>,
+    quantized: &mut [u8],
+    vec: &[f32],
+    bias: &[f32],
     lower_bound: f32,
     multiplier: f32,
 ) -> u32 {
     let mut sum = 0u32;
-    for i in 0..vec.len() {
+    for i in 0..quantized.len() {
         let q = ((vec[i] - lower_bound) * multiplier + bias[i]) as u8;
         quantized[i] = q;
         sum += q as u32;
@@ -164,9 +154,9 @@ fn scalar_quantize_raw(
 
 // Interface of `scalar_quantize`
 fn scalar_quantize(
-    quantized: &mut DVector<u8>,
-    vec: &DVectorView<f32>,
-    bias: &DVectorView<f32>,
+    quantized: &mut [u8],
+    vec: &[f32],
+    bias: &[f32],
     lower_bound: f32,
     multiplier: f32,
 ) -> u32 {
@@ -187,30 +177,29 @@ fn scalar_quantize(
 /// Project the vector to the orthogonal matrix.
 #[allow(dead_code)]
 #[inline]
-fn project(vec: &DVectorView<f32>, orthogonal: &DMatrixView<f32>) -> DVector<f32> {
+fn project(vec: &RowRef<f32>, orthogonal: &MatRef<f32>) -> Row<f32> {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
-            DVector::from_fn(vec.len(), |i, _| unsafe {
-                crate::simd::vector_dot_product(vec, &orthogonal.column(i).as_view())
+            Row::from_fn(orthogonal.ncols(), |i| unsafe {
+                crate::simd::vector_dot_product(vec, &orthogonal.col(i))
             })
         } else {
-            vec.tr_mul(orthogonal).transpose()
+            vec * orthogonal
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        vec.tr_mul(orthogonal).transpose()
+        vec * orthogonal
     }
 }
 
 /// Find the nearest cluster for the given vector.
-fn kmeans_nearest_cluster(centroids: &DMatrixView<f32>, vec: &DVectorView<f32>) -> usize {
+fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> usize {
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
-    let mut residual = DVector::<f32>::zeros(vec.len());
-    for (j, centroid) in centroids.column_iter().enumerate() {
-        let dist = l2_squared_distance(&centroid, vec, &mut residual);
+    for (j, centroid) in centroids.col_iter().enumerate() {
+        let dist = l2_squared_distance(&centroid, vec);
         if dist < min_dist {
             min_dist = dist;
             min_label = j;
@@ -223,10 +212,10 @@ fn kmeans_nearest_cluster(centroids: &DMatrixView<f32>, vec: &DVectorView<f32>) 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaBitQ {
     dim: u32,
-    base: DMatrix<f32>,
-    orthogonal: DMatrix<f32>,
-    rand_bias: DVector<f32>,
-    centroids: DMatrix<f32>,
+    base: Mat<f32>,
+    orthogonal: Mat<f32>,
+    rand_bias: Vec<f32>,
+    centroids: Mat<f32>,
     offsets: Vec<u32>,
     map_ids: Vec<u32>,
     x_binary_vec: Vec<Vec<u64>>,
@@ -269,7 +258,9 @@ impl RaBitQ {
             read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
 
         let dim = orthogonal.nrows();
-        let base = matrix_from_fvecs(&path.join("base.fvecs")).transpose();
+        let base = matrix_from_fvecs(&path.join("base.fvecs"))
+            .transpose()
+            .to_owned();
 
         Self {
             dim: dim as u32,
@@ -290,11 +281,10 @@ impl RaBitQ {
     /// Dump to dir.
     pub fn dump_to_dir(&self, path: &Path) {
         std::fs::create_dir_all(path).expect("create dir error");
-        write_matrix(&path.join("base.fvecs"), &self.base.transpose().as_view())
-            .expect("write base error");
-        write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_view())
+        write_matrix(&path.join("base.fvecs"), &self.base.transpose()).expect("write base error");
+        write_matrix(&path.join("orthogonal.fvecs"), &self.orthogonal.as_ref())
             .expect("write orthogonal error");
-        write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_view())
+        write_matrix(&path.join("centroids.fvecs"), &self.centroids.as_ref())
             .expect("write centroids error");
 
         write_vecs(
@@ -331,31 +321,31 @@ impl RaBitQ {
 
         // projection
         debug!("projection x & c...");
-        let x_projected = (&base * &orthogonal).transpose();
-        let centroids = (centroids * &orthogonal).transpose();
+        let x_projected = (&base * &orthogonal).transpose().to_owned();
+        let centroids = (centroids * &orthogonal).transpose().to_owned();
 
-        // kmeans
+        // k-means
         let dim_sqrt = (dim as f32).sqrt();
         let mut labels = vec![Vec::new(); k];
         let mut x_c_distance_square = vec![0.0; n];
         let mut x_c_distance = vec![0.0; n];
         let mut x_binary_vec: Vec<Vec<u64>> = Vec::with_capacity(n);
-        let mut x_signed_vec: Vec<DVector<f32>> = Vec::with_capacity(n);
+        let mut x_signed_vec: Vec<Col<f32>> = Vec::with_capacity(n);
         let mut x_dot_product = vec![0.0; n];
-        for (i, xp) in x_projected.column_iter().enumerate() {
+        for (i, xp) in x_projected.col_iter().enumerate() {
             if i % 5000 == 0 {
                 debug!("\t> preprocessing {}...", i);
             }
-            let min_label = kmeans_nearest_cluster(&centroids.as_view(), &xp);
+            let min_label = kmeans_nearest_cluster(&centroids.as_ref(), &xp);
             labels[min_label].push(i as u32);
-            let x_c_quantized = xp - centroids.column(min_label);
-            x_c_distance[i] = x_c_quantized.norm();
+            let x_c_quantized = xp - centroids.col(min_label);
+            x_c_distance[i] = x_c_quantized.norm_l2();
             x_c_distance_square[i] = x_c_distance[i].powi(2);
-            x_binary_vec.push(vector_binarize_u64(&x_c_quantized.as_view()));
-            x_signed_vec.push(vector_binarize_one(&x_c_quantized.as_view()));
+            x_binary_vec.push(vector_binarize_u64(&x_c_quantized.as_ref()));
+            x_signed_vec.push(vector_binarize_one(&x_c_quantized.as_ref()));
             let norm = x_c_distance[i] * dim_sqrt;
             x_dot_product[i] = if norm.is_normal() {
-                x_c_quantized.dot(&x_signed_vec[i]) / norm
+                x_c_quantized.as_ref().adjoint() * &x_signed_vec[i] / norm
             } else {
                 DEFAULT_X_DOT_PRODUCT
             };
@@ -365,15 +355,15 @@ impl RaBitQ {
         debug!("computing factors...");
         let mut error_bound = Vec::with_capacity(n);
         let mut factor_ip = Vec::with_capacity(n);
-        let mut factor_ppc = Vec::with_capacity(n);
+        let mut factor_ppc: Vec<f32> = Vec::with_capacity(n);
         let error_base = 2.0 * EPSILON / (dim as f32 - 1.0).sqrt();
-        let one_vec = DVector::from_element(dim, 1.0);
+        let one_vec: Row<f32> = Row::ones(dim);
         for i in 0..n {
             let x_c_over_ip = x_c_distance[i] / x_dot_product[i];
             error_bound
                 .push(error_base * (x_c_over_ip * x_c_over_ip - x_c_distance_square[i]).sqrt());
             factor_ip.push(-2.0 / dim_sqrt * x_c_over_ip);
-            factor_ppc.push(factor_ip[i] * one_vec.dot(&x_signed_vec[i]));
+            factor_ppc.push(factor_ip[i] * (&one_vec * &x_signed_vec[i]));
         }
 
         // sort by labels
@@ -383,14 +373,9 @@ impl RaBitQ {
             offsets[i + 1] = offsets[i] + labels[i].len() as u32;
         }
         let flat_labels: Vec<u32> = labels.into_iter().flatten().collect();
-        let base = DMatrix::from_row_iterator(
-            flat_labels.len(),
-            dim,
-            flat_labels
-                .iter()
-                .flat_map(|&i| base.row(i as usize).iter().copied().collect::<Vec<_>>()),
-        )
-        .transpose();
+        let base = Mat::from_fn(n, dim, |i, j| base.read(flat_labels[i] as usize, j))
+            .transpose()
+            .to_owned();
         let x_binary_vec = flat_labels
             .iter()
             .map(|i| x_binary_vec[*i as usize].clone())
@@ -428,17 +413,19 @@ impl RaBitQ {
     /// Query the topk nearest neighbors for the given query.
     pub fn query(
         &self,
-        query: &DVectorView<f32>,
+        query: &ColRef<f32>,
         probe: usize,
         topk: usize,
         heuristic_rank: bool,
     ) -> Vec<(f32, u32)> {
-        let y_projected = query.tr_mul(&self.orthogonal).transpose();
+        let y_projected = (query.transpose() * &self.orthogonal)
+            .transpose()
+            .to_owned();
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
-        let mut residual = DVector::<f32>::zeros(self.dim as usize);
-        for (i, centroid) in self.centroids.column_iter().enumerate() {
-            let dist = l2_squared_distance(&centroid, &y_projected.as_view(), &mut residual);
+        let mut residual = vec![0f32; self.dim as usize];
+        for (i, centroid) in self.centroids.col_iter().enumerate() {
+            let dist = l2_squared_distance(&centroid, &y_projected.as_ref());
             lists.push((dist, i));
         }
         let length = probe.min(k);
@@ -447,25 +434,22 @@ impl RaBitQ {
         lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut rough_distances = Vec::new();
-        let mut quantized = DVector::<u8>::zeros(self.dim as usize);
-        let mut binary_vec = vec![0u64; query.len() * THETA_LOG_DIM as usize / 64];
+        let mut quantized = vec![0u8; self.dim as usize];
+        let mut binary_vec = vec![0u64; self.dim as usize * THETA_LOG_DIM as usize / 64];
         for &(dist, i) in lists[..length].iter() {
-            let (lower_bound, upper_bound) = min_max_residual(
-                &mut residual,
-                &y_projected.as_view(),
-                &self.centroids.column(i),
-            );
+            let (lower_bound, upper_bound) =
+                min_max_residual(&mut residual, &y_projected.as_ref(), &self.centroids.col(i));
             let delta = (upper_bound - lower_bound) / ((1 << THETA_LOG_DIM) as f32 - 1.0);
             let one_over_delta = 1.0 / delta;
             let scalar_sum = scalar_quantize(
                 &mut quantized,
-                &residual.as_view(),
-                &self.rand_bias.as_view(),
+                &residual,
+                &self.rand_bias,
                 lower_bound,
                 one_over_delta,
             );
             binary_vec.iter_mut().for_each(|element| *element = 0);
-            vector_binarize_query(&quantized.as_view(), &mut binary_vec);
+            vector_binarize_query(&quantized, &mut binary_vec);
             let dist_sqrt = dist.sqrt();
             for j in self.offsets[i]..self.offsets[i + 1] {
                 let ju = j as usize;
@@ -495,21 +479,16 @@ impl RaBitQ {
     /// BinaryHeap based re-rank with Ord32.
     fn re_rank(
         &self,
-        query: &DVectorView<f32>,
+        query: &ColRef<f32>,
         rough_distances: &[(f32, u32)],
         topk: usize,
     ) -> Vec<(f32, u32)> {
         let mut threshold = f32::MAX;
         let mut precise = 0;
-        let mut residual = DVector::<f32>::zeros(self.dim as usize);
         let mut heap: BinaryHeap<(Ord32, u32)> = BinaryHeap::with_capacity(topk);
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
-                let accurate = l2_squared_distance(
-                    &self.base.column(u as usize),
-                    &query.as_view(),
-                    &mut residual,
-                );
+                let accurate = l2_squared_distance(&self.base.col(u as usize), query);
                 precise += 1;
                 if accurate < threshold {
                     heap.push((accurate.into(), self.map_ids[u as usize]));
@@ -533,7 +512,7 @@ impl RaBitQ {
     /// Heuristic re-rank with a fixed windows size to update the threshold.
     fn heuristic_re_rank(
         &self,
-        query: &DVectorView<f32>,
+        query: &ColRef<f32>,
         rough_distances: &[(f32, u32)],
         topk: usize,
     ) -> Vec<(f32, u32)> {
@@ -541,15 +520,10 @@ impl RaBitQ {
         let mut recent_max_accurate = f32::MIN;
         let mut res = Vec::with_capacity(topk);
         let mut count = 0;
-        let mut residual = DVector::<f32>::zeros(self.dim as usize);
         let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
             if rough < threshold {
-                let accurate = l2_squared_distance(
-                    &self.base.column(u as usize),
-                    &query.as_view(),
-                    &mut residual,
-                );
+                let accurate = l2_squared_distance(&self.base.col(u as usize), query);
                 precise += 1;
                 if accurate < threshold {
                     res.push((accurate, self.map_ids[u as usize]));

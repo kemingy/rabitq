@@ -5,57 +5,55 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use nalgebra::debug::RandomOrthogonal;
-use nalgebra::{DMatrix, DMatrixView, DVector, Dim, Dyn};
+use faer::{Col, Mat, MatRef};
 use num_traits::{FromBytes, ToBytes};
 use rand::{thread_rng, Rng};
 
-/// Generate a random orthogonal matrix.
-pub fn gen_random_orthogonal(dim: usize) -> DMatrix<f32> {
-    let mut rng = thread_rng();
-    let random: RandomOrthogonal<f32, Dyn> =
-        RandomOrthogonal::new(Dim::from_usize(dim), || rng.gen());
-    random.unwrap()
-}
-
 /// Generate a random orthogonal matrix from QR decomposition.
-pub fn gen_random_qr_orthogonal(dim: usize) -> DMatrix<f32> {
+pub fn gen_random_qr_orthogonal(dim: usize) -> Mat<f32> {
     let mut rng = thread_rng();
-    let random = DMatrix::from_fn(dim, dim, |_, _| rng.gen::<f32>());
-    random.qr().q()
+    let random = Mat::from_fn(dim, dim, |_, _| rng.gen::<f32>());
+    random.qr().compute_q()
 }
 
 /// Generate an identity matrix as a special orthogonal matrix.
 ///
 /// Use this function to debug the logic.
-pub fn gen_identity_matrix(dim: usize) -> DMatrix<f32> {
-    DMatrix::identity(dim, dim)
+pub fn gen_identity_matrix(dim: usize) -> Mat<f32> {
+    Mat::identity(dim, dim)
 }
 
 /// Generate a fixed bias vector.
 ///
 /// Use this function to debug the logic.
-pub fn gen_fixed_bias(dim: usize) -> DVector<f32> {
-    DVector::from_element(dim, 0.5)
+pub fn gen_fixed_bias(dim: usize) -> Mat<f32> {
+    Mat::from_fn(1, dim, |_, _| 0.5)
 }
 
 /// Generate a random bias vector.
-pub fn gen_random_bias(dim: usize) -> DVector<f32> {
+pub fn gen_random_bias(dim: usize) -> Vec<f32> {
     let mut rng = thread_rng();
-    DVector::from_fn(dim, |_, _| rng.gen())
+    (0..dim).map(|_| rng.gen::<f32>()).collect()
 }
 
 /// Convert a vector to a dynamic vector.
-pub fn dvector_from_vec(vec: Vec<f32>) -> DVector<f32> {
-    DVector::from_vec(vec)
+pub fn matrix1d_from_vec(vec: &[f32]) -> Col<f32> {
+    Col::from_fn(vec.len(), |i| vec[i])
 }
 
+/// Fill Mat column with a vector.
+// pub fn fill_mat_col_with_vec(matrix: &mut ColMut<f32>, vec: &[f32]) {
+//     for (i, v) in vec.iter().enumerate() {
+//         matrix.write(i, *v);
+//     }
+// }
+
 /// Read the fvecs file and convert it to a matrix.
-pub fn matrix_from_fvecs(path: &Path) -> DMatrix<f32> {
+pub fn matrix_from_fvecs(path: &Path) -> Mat<f32> {
     let vecs = read_vecs::<f32>(path).expect("read vecs error");
     let dim = vecs[0].len();
     let rows = vecs.len();
-    DMatrix::from_row_iterator(rows, dim, vecs.into_iter().flatten())
+    Mat::from_fn(rows, dim, |i, j| vecs[i][j])
 }
 
 /// Read the fvces/ivces file.
@@ -112,16 +110,16 @@ pub fn read_u64_vecs(path: &Path) -> std::io::Result<Vec<Vec<u64>>> {
 }
 
 /// Write the fvecs/ivecs file from DMatrix.
-pub fn write_matrix<T>(path: &Path, matrix: &DMatrixView<T>) -> std::io::Result<()>
+pub fn write_matrix<T>(path: &Path, matrix: &MatRef<T>) -> std::io::Result<()>
 where
-    T: Sized + ToBytes,
+    T: Sized + ToBytes + faer::Entity,
 {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
     for vec in matrix.row_iter() {
-        writer.write_all(&(vec.len() as u32).to_le_bytes())?;
-        for v in vec.iter() {
-            writer.write_all(T::to_le_bytes(v).as_ref())?;
+        writer.write_all(&(vec.ncols() as u32).to_le_bytes())?;
+        for i in 0..vec.ncols() {
+            writer.write_all(T::to_le_bytes(&vec.read(i)).as_ref())?;
         }
     }
     writer.flush()?;

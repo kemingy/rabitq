@@ -1,6 +1,6 @@
 //! Accelerate with SIMD.
 
-use nalgebra::{DVector, DVectorView};
+use faer::{ColRef, RowRef};
 
 use crate::consts::THETA_LOG_DIM;
 
@@ -12,17 +12,17 @@ use crate::consts::THETA_LOG_DIM;
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx")]
-pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>) -> f32 {
+pub unsafe fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
 
-    assert_eq!(lhs.len(), rhs.len());
+    assert_eq!(lhs.nrows(), rhs.nrows());
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let block_16_num = lhs.len() >> 4;
-    let rest_num = lhs.len() & 0b1111;
+    let block_16_num = lhs.nrows() >> 4;
+    let rest_num = lhs.nrows() & 0b1111;
     let mut f32x8 = [0.0f32; 8];
     let (mut diff, mut vx, mut vy): (__m256, __m256, __m256);
     let mut sum = _mm256_setzero_ps();
@@ -71,7 +71,7 @@ pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx,avx2")]
-pub unsafe fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
+pub unsafe fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
     use std::arch::x86_64::*;
 
     let length = vec.len();
@@ -99,11 +99,7 @@ pub unsafe fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx")]
-pub unsafe fn min_max_residual(
-    res: &mut DVector<f32>,
-    x: &DVectorView<f32>,
-    y: &DVectorView<f32>,
-) -> (f32, f32) {
+pub unsafe fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
     use std::arch::x86_64::*;
 
     let mut min_32x8 = _mm256_set1_ps(f32::MAX);
@@ -168,8 +164,8 @@ pub unsafe fn min_max_residual(
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx,avx2")]
 pub unsafe fn scalar_quantize(
-    quantized: &mut DVector<u8>,
-    vec: &DVectorView<f32>,
+    quantized: &mut [u8],
+    vec: &[f32],
     lower_bound: f32,
     multiplier: f32,
 ) -> u32 {
@@ -233,12 +229,12 @@ pub unsafe fn scalar_quantize(
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx,avx2")]
-pub unsafe fn vector_dot_product(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>) -> f32 {
+pub unsafe fn vector_dot_product(lhs: &RowRef<f32>, rhs: &ColRef<f32>) -> f32 {
     use std::arch::x86_64::*;
 
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let length = lhs.len();
+    let length = lhs.ncols();
     let rest = length & 0b111;
     let (mut vx, mut vy): (__m256, __m256);
     let mut accumulate = _mm256_setzero_ps();
