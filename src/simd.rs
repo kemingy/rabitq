@@ -1,6 +1,6 @@
 //! Accelerate with SIMD.
 
-use faer::{ColRef, RowRef};
+use faer::ColRef;
 
 use crate::consts::THETA_LOG_DIM;
 
@@ -229,12 +229,12 @@ pub unsafe fn scalar_quantize(
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx,avx2")]
-pub unsafe fn vector_dot_product(lhs: &RowRef<f32>, rhs: &ColRef<f32>) -> f32 {
+pub unsafe fn vector_dot_product(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     use std::arch::x86_64::*;
 
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let length = lhs.ncols();
+    let length = lhs.nrows();
     let rest = length & 0b111;
     let (mut vx, mut vy): (__m256, __m256);
     let mut accumulate = _mm256_setzero_ps();

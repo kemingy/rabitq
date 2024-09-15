@@ -4,7 +4,7 @@ use core::f32;
 use std::collections::BinaryHeap;
 use std::path::Path;
 
-use faer::{Col, ColRef, Mat, MatRef, Row, RowRef};
+use faer::{Col, ColRef, Mat, MatRef, Row};
 use log::debug;
 // use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView};
 use serde::{Deserialize, Serialize};
@@ -177,20 +177,20 @@ fn scalar_quantize(
 /// Project the vector to the orthogonal matrix.
 #[allow(dead_code)]
 #[inline]
-fn project(vec: &RowRef<f32>, orthogonal: &MatRef<f32>) -> Row<f32> {
+fn project(vec: &ColRef<f32>, orthogonal: &MatRef<f32>) -> Col<f32> {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
-            Row::from_fn(orthogonal.ncols(), |i| unsafe {
+            Col::from_fn(orthogonal.ncols(), |i| unsafe {
                 crate::simd::vector_dot_product(vec, &orthogonal.col(i))
             })
         } else {
-            vec * orthogonal
+            (vec.transpose() * orthogonal).transpose().to_owned()
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        vec * orthogonal
+        (vec.transpose() * orthogonal).transpose().to_owned()
     }
 }
 
@@ -418,9 +418,7 @@ impl RaBitQ {
         topk: usize,
         heuristic_rank: bool,
     ) -> Vec<(f32, u32)> {
-        let y_projected = (query.transpose() * &self.orthogonal)
-            .transpose()
-            .to_owned();
+        let y_projected = project(query, &self.orthogonal.as_ref());
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
         let mut residual = vec![0f32; self.dim as usize];
