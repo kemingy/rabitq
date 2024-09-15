@@ -115,7 +115,20 @@ pub fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
     let length = x.len();
     let mut y_slice = y;
     for i in 0..THETA_LOG_DIM as usize {
-        res += binary_dot_product(x, y_slice) << i;
+        res += {
+            #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    unsafe { crate::simd::binary_dot_product(x, y_slice) << i }
+                } else {
+                    binary_dot_product(x, y_slice) << i
+                }
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+            {
+                binary_dot_product(x, y_slice) << i
+            }
+        };
         y_slice = &y_slice[length..];
     }
     res
