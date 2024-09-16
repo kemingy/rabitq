@@ -258,28 +258,50 @@ impl RaBitQ {
             );
             binary_vec.iter_mut().for_each(|element| *element = 0);
             vector_binarize_query(&quantized, &mut binary_vec);
-            let dist_sqrt = dist.sqrt();
-            for j in self.offsets[i]..self.offsets[i + 1] {
-                let ju = j as usize;
-                rough_distances.push((
-                    (self.x_c_distance_square[ju]
-                        + dist
-                        + lower_bound * self.factor_ppc[ju]
-                        + (2.0
-                            * asymmetric_binary_dot_product(&self.x_binary_vec[ju], &binary_vec)
-                                as f32
-                            - scalar_sum as f32)
-                            * self.factor_ip[ju]
-                            * delta
-                        - self.error_bound[ju] * dist_sqrt),
-                    j,
-                ));
-            }
+            self.calculate_rough_distance(
+                dist,
+                &binary_vec,
+                lower_bound,
+                scalar_sum as f32,
+                delta,
+                i,
+                &mut rough_distances,
+            );
             re_ranker.rank_batch(&rough_distances, &self.base.as_ref(), &self.map_ids);
             rough_distances.clear();
         }
 
         METRICS.add_query_count(1);
         re_ranker.get_result()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn calculate_rough_distance(
+        &self,
+        y_c_distance_square: f32,
+        y_binary_vec: &[u64],
+        lower_bound: f32,
+        scalar_sum: f32,
+        delta: f32,
+        cluster_id: usize,
+        rough_distances: &mut Vec<(f32, u32)>,
+    ) {
+        let dist_sqrt = y_c_distance_square.sqrt();
+        for j in self.offsets[cluster_id]..self.offsets[cluster_id + 1] {
+            let ju = j as usize;
+            rough_distances.push((
+                (self.x_c_distance_square[ju]
+                    + y_c_distance_square
+                    + lower_bound * self.factor_ppc[ju]
+                    + (2.0
+                        * asymmetric_binary_dot_product(&self.x_binary_vec[ju], y_binary_vec)
+                            as f32
+                        - scalar_sum)
+                        * self.factor_ip[ju]
+                        * delta
+                    - self.error_bound[ju] * dist_sqrt),
+                j,
+            ));
+        }
     }
 }

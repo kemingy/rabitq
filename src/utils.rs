@@ -52,6 +52,7 @@ pub fn matrix_from_fvecs(path: &Path) -> Mat<f32> {
 }
 
 /// Convert the vector to binary format and store in a u64 vector.
+#[inline]
 pub fn vector_binarize_u64(vec: &ColRef<f32>) -> Vec<u64> {
     let mut binary = vec![0u64; (vec.nrows() + 63) / 64];
     for (i, &v) in vec.iter().enumerate() {
@@ -69,6 +70,7 @@ pub fn vector_binarize_one(vec: &ColRef<f32>) -> Col<f32> {
 }
 
 /// Interface of `vector_binarize_query`
+#[inline]
 pub fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
@@ -110,6 +112,7 @@ fn binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 /// Calculate the dot product of two binary vectors with different lengths.
 ///
 /// The length of `y` should be `x.len() * THETA_LOG_DIM`.
+#[inline]
 pub fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
     let mut res = 0;
     let length = x.len();
@@ -135,6 +138,7 @@ pub fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 }
 
 /// Calculate the L2 squared distance between two vectors.
+#[inline]
 pub fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
@@ -167,6 +171,7 @@ fn min_max_raw(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) 
 }
 
 /// Interface of `min_max_residual`: get the min/max value of the residual of two vectors.
+#[inline]
 pub fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
@@ -200,6 +205,7 @@ fn scalar_quantize_raw(
 }
 
 /// Interface of `scalar_quantize`: scale vector to u8.
+#[inline]
 pub fn scalar_quantize(
     quantized: &mut [u8],
     vec: &[f32],
