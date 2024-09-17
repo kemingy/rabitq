@@ -10,20 +10,22 @@ keywords = ["vector-search", "quantization", "binary-dot-product"]
 categories = ["algorithms", "science"]
 
 [dependencies]
-anyhow = "1.0.87"
-argh = "0.1.12"
-aws-config = "1.5.5"
-aws-sdk-s3 = "1.48.0"
+anyhow = "1.0.89"
+argh = "0.1"
+aws-config = "1.5.6"
+aws-sdk-s3 = "1.49.0"
 bytes = "1.7.1"
-env_logger = "0.11.5"
-foyer = "0.11.1"
-log = "0.4.22"
-nalgebra = {version = "0.33.0", features = ["debug", "serde-serialize"]}
-num-traits = "0.2.19"
-quick_cache = "0.6.6"
-rand = "0.8.5"
-serde = "1.0.207"
-serde_json = "1.0.124"
+env_logger = "0.11"
+faer = "0.19"
+log = "0.4"
+num-traits = "0.2"
+quick_cache = "0.6.9"
+rand = "0.8"
+serde = "1"
+serde_json = "1"
+
+[profile.dev.package.faer]
+opt-level = 3
 
 [profile.release]
 codegen-units = 1

@@ -12,17 +12,18 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use bytes::Buf;
 // use foyer::{DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder};
-use nalgebra::{DVector, DVectorView};
+// use nalgebra::{DVector, DVectorView};
+use faer::{Col, ColRef};
 use quick_cache::sync::Cache;
 
 use crate::consts::BLOCK_BYTE_LIMIT;
 use crate::simd::l2_squared_distance;
 
-fn parse_fvecs(bytes: &mut impl Buf) -> Vec<DVector<f32>> {
+fn parse_fvecs(bytes: &mut impl Buf) -> Vec<Col<f32>> {
     let mut vecs = Vec::new();
     while bytes.has_remaining() {
         let dim = bytes.get_u32_le() as usize;
-        vecs.push(DVector::from_fn(dim, |_, _| bytes.get_f32_le()));
+        vecs.push(Col::from_fn(dim, |_| bytes.get_f32_le()));
     }
     vecs
 }
@@ -69,7 +70,7 @@ pub struct CachedVector {
     s3_key: String,
     s3_client: Client,
     // cache: HybridCache<u32, DVector<f32>>,
-    cache: Arc<Cache<u32, Arc<DVector<f32>>>>,
+    cache: Arc<Cache<u32, Arc<Col<f32>>>>,
 }
 
 impl CachedVector {
@@ -148,7 +149,7 @@ impl CachedVector {
     pub async fn get_l2_squared_distance(
         &self,
         index: usize,
-        query: &DVectorView<'_, f32>,
+        query: &ColRef<'_, f32>,
     ) -> anyhow::Result<f32> {
         // if !self.cache.contains(&(index as u32)) {
         //     self.fetch_from_s3(index)
@@ -162,14 +163,14 @@ impl CachedVector {
         //     .expect("entry is empty");
 
         if let Some(entry) = self.cache.get(&(index as u32)) {
-            return Ok(unsafe { l2_squared_distance(&entry.as_view(), query) });
+            return Ok(unsafe { l2_squared_distance(&entry.as_ref().as_ref(), query) });
         }
         self.fetch_from_s3(index)
             .await
             .expect("failed to fetch from s3");
 
         if let Some(entry) = self.cache.get(&(index as u32)) {
-            return Ok(unsafe { l2_squared_distance(&entry.as_view(), query) });
+            return Ok(unsafe { l2_squared_distance(&entry.as_ref().as_ref(), query) });
         }
         Err(anyhow::anyhow!("failed to get entry"))
     }

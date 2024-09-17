@@ -1,6 +1,6 @@
 //! Accelerate with SIMD.
 
-use nalgebra::{DVector, DVectorView};
+use faer::ColRef;
 
 use crate::consts::THETA_LOG_DIM;
 
@@ -12,17 +12,17 @@ use crate::consts::THETA_LOG_DIM;
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx")]
-pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>) -> f32 {
+pub unsafe fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
 
-    assert_eq!(lhs.len(), rhs.len());
+    assert_eq!(lhs.nrows(), rhs.nrows());
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let block_16_num = lhs.len() >> 4;
-    let rest_num = lhs.len() & 0b1111;
+    let block_16_num = lhs.nrows() >> 4;
+    let rest_num = lhs.nrows() & 0b1111;
     let mut f32x8 = [0.0f32; 8];
     let (mut diff, mut vx, mut vy): (__m256, __m256, __m256);
     let mut sum = _mm256_setzero_ps();
@@ -71,7 +71,7 @@ pub unsafe fn l2_squared_distance(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx,avx2")]
-pub unsafe fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
+pub unsafe fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
     use std::arch::x86_64::*;
 
     let length = vec.len();
@@ -99,11 +99,7 @@ pub unsafe fn vector_binarize_query(vec: &DVectorView<u8>, binary: &mut [u64]) {
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx")]
-pub unsafe fn min_max_residual(
-    res: &mut DVector<f32>,
-    x: &DVectorView<f32>,
-    y: &DVectorView<f32>,
-) -> (f32, f32) {
+pub unsafe fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
     use std::arch::x86_64::*;
 
     let mut min_32x8 = _mm256_set1_ps(f32::MAX);
@@ -168,8 +164,8 @@ pub unsafe fn min_max_residual(
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx,avx2")]
 pub unsafe fn scalar_quantize(
-    quantized: &mut DVector<u8>,
-    vec: &DVectorView<f32>,
+    quantized: &mut [u8],
+    vec: &[f32],
     lower_bound: f32,
     multiplier: f32,
 ) -> u32 {
@@ -233,12 +229,12 @@ pub unsafe fn scalar_quantize(
 /// This function is marked unsafe because it requires the AVX intrinsics.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx,avx2")]
-pub unsafe fn vector_dot_product(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>) -> f32 {
+pub unsafe fn vector_dot_product(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
     use std::arch::x86_64::*;
 
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let length = lhs.len();
+    let length = lhs.nrows();
     let rest = length & 0b111;
     let (mut vx, mut vy): (__m256, __m256);
     let mut accumulate = _mm256_setzero_ps();
@@ -273,6 +269,72 @@ pub unsafe fn vector_dot_product(lhs: &DVectorView<f32>, rhs: &DVectorView<f32>)
         lhs_ptr = lhs_ptr.add(1);
         rhs_ptr = rhs_ptr.add(1);
     }
+
+    sum
+}
+
+/// Compute the binary dot product of two vectors.
+///
+/// Refer to: https://github.com/komrad36/popcount
+///
+/// # Safety
+///
+/// This function is marked unsafe because it requires the AVX2 intrinsics.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "sse2,avx,avx2")]
+#[inline]
+pub unsafe fn binary_dot_product(lhs: &[u64], rhs: &[u64]) -> u32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = 0;
+    let length = lhs.len() / 4;
+    if length == 0 {
+        for i in 0..lhs.len() {
+            sum += (lhs[i] & rhs[i]).count_ones();
+        }
+        return sum;
+    }
+    let rest = lhs.len() & 0b11;
+    for i in 0..rest {
+        sum += (lhs[4 * length + i] & rhs[4 * length + i]).count_ones();
+    }
+
+    #[inline]
+    unsafe fn mm256_popcnt_epi64(x: __m256i) -> __m256i {
+        let lookup_table = _mm256_setr_epi8(
+            0, 1, 1, 2, 1, 2, 2, 3, // 0-7
+            1, 2, 2, 3, 2, 3, 3, 4, // 8-15
+            0, 1, 1, 2, 1, 2, 2, 3, // 16-23
+            1, 2, 2, 3, 2, 3, 3, 4, // 24-31
+        );
+        let mask = _mm256_set1_epi8(15);
+        let zero = _mm256_setzero_si256();
+
+        let mut low = _mm256_and_si256(x, mask);
+        let mut high = _mm256_and_si256(_mm256_srli_epi64(x, 4), mask);
+        low = _mm256_shuffle_epi8(lookup_table, low);
+        high = _mm256_shuffle_epi8(lookup_table, high);
+        _mm256_sad_epu8(_mm256_add_epi8(low, high), zero)
+    }
+
+    let mut sum256 = _mm256_setzero_si256();
+    let mut x_ptr = lhs.as_ptr() as *const __m256i;
+    let mut y_ptr = rhs.as_ptr() as *const __m256i;
+
+    for _ in 0..length {
+        let x256 = _mm256_loadu_si256(x_ptr);
+        let y256 = _mm256_loadu_si256(y_ptr);
+        let and = _mm256_and_si256(x256, y256);
+        sum256 = _mm256_add_epi64(sum256, mm256_popcnt_epi64(and));
+        x_ptr = x_ptr.add(1);
+        y_ptr = y_ptr.add(1);
+    }
+
+    let xa = _mm_add_epi64(
+        _mm256_castsi256_si128(sum256),
+        _mm256_extracti128_si256(sum256, 1),
+    );
+    sum += _mm_cvtsi128_si64(_mm_add_epi64(xa, _mm_shuffle_epi32(xa, 78))) as u32;
 
     sum
 }
