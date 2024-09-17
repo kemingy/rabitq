@@ -13,7 +13,8 @@ use aws_sdk_s3::Client;
 use bytes::Buf;
 // use foyer::{DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder};
 use faer::{Col, ColRef};
-use quick_cache::sync::Cache;
+use quick_cache::sync::{Cache, DefaultLifecycle};
+use quick_cache::{DefaultHashBuilder, OptionsBuilder, UnitWeighter};
 
 use crate::consts::BLOCK_BYTE_LIMIT;
 use crate::simd::l2_squared_distance;
@@ -107,7 +108,17 @@ impl CachedVector {
             //     .build()
             //     .await
             //     .expect("failed to create cache"),
-            cache: Arc::new(Cache::new(mem_cache_num as usize)),
+            cache: Arc::new(Cache::with_options(
+                OptionsBuilder::new()
+                    .shards(1)
+                    .estimated_items_capacity(mem_cache_num as usize)
+                    .weight_capacity(mem_cache_num as u64)
+                    .build()
+                    .unwrap(),
+                UnitWeighter,
+                DefaultHashBuilder::default(),
+                DefaultLifecycle::default(),
+            )),
             s3_client,
         }
     }
@@ -176,7 +187,12 @@ impl CachedVector {
 
     /// Get the cache stats.
     pub fn get_cache_stats(&self) -> String {
-        format!("hits: {}, misses: {}, length: {}", self.cache.hits(), self.cache.misses(), self.cache.len())
+        format!(
+            "hits: {}, misses: {}, length: {}",
+            self.cache.hits(),
+            self.cache.misses(),
+            self.cache.len()
+        )
     }
 }
 
