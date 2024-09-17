@@ -12,7 +12,6 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use bytes::Buf;
 // use foyer::{DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder};
-// use nalgebra::{DVector, DVectorView};
 use faer::{Col, ColRef};
 use quick_cache::sync::Cache;
 
@@ -78,11 +77,11 @@ impl CachedVector {
     pub async fn new(
         dim: u32,
         num: u32,
-        local_path: String,
+        _local_path: String,
         s3_bucket: String,
         s3_prefix: String,
         mem_cache_num: u32,
-        disk_cache_mb: u32,
+        _disk_cache_mb: u32,
     ) -> Self {
         let num_per_block = BLOCK_BYTE_LIMIT / 4 / (dim + 1);
         let block_num = (num as f32 / num_per_block as f32).ceil() as u32;
@@ -96,7 +95,7 @@ impl CachedVector {
             block_num,
             num_per_block,
             s3_bucket,
-            s3_key: format!("{}/centroids.fvecs", s3_prefix),
+            s3_key: format!("{}/base.fvecs", s3_prefix),
             // cache: HybridCacheBuilder::new()
             //     .memory(mem_cache_num as usize * 1024 * 1024)
             //     .storage()
@@ -173,6 +172,11 @@ impl CachedVector {
             return Ok(unsafe { l2_squared_distance(&entry.as_ref().as_ref(), query) });
         }
         Err(anyhow::anyhow!("failed to get entry"))
+    }
+
+    /// Get the cache stats.
+    pub fn get_cache_stats(&self) -> String {
+        format!("hits: {}, misses: {}, length: {}", self.cache.hits(), self.cache.misses(), self.cache.len())
     }
 }
 
