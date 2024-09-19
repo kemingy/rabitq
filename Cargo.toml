@@ -17,9 +17,10 @@ aws-sdk-s3 = "1.49.0"
 bytes = "1.7.1"
 env_logger = "0.11"
 faer = "0.19"
+foyer = "0.11.2"
 log = "0.4"
 num-traits = "0.2"
-quick_cache = { version = "0.6.9", features = ["stats"]}
+# quick_cache = { version = "0.6.9", features = ["stats"] }
 rand = "0.8"
 serde = "1"
 serde_json = "1"
@@ -38,3 +39,6 @@ debug = true
 lto = false
 codegen-units = 16
 panic = "unwind"
+
+[patch.crates-io]
+faer = { git = "https://github.com/kemingy/faer-rs.git", branch = "serde_seq" }
