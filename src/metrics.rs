@@ -11,6 +11,8 @@ pub struct Metrics {
     pub precise: AtomicU64,
     /// query count
     pub query: AtomicU64,
+    /// s3 fetch
+    pub s3_fetch: AtomicU64,
 }
 
 impl Metrics {
@@ -20,6 +22,7 @@ impl Metrics {
             rough: AtomicU64::new(0),
             precise: AtomicU64::new(0),
             query: AtomicU64::new(0),
+            s3_fetch: AtomicU64::new(0),
         }
     }
 
@@ -27,12 +30,14 @@ impl Metrics {
     pub fn to_str(&self) -> String {
         let rough = self.rough.load(Ordering::Relaxed);
         let precise = self.precise.load(Ordering::Relaxed);
+        let s3 = self.s3_fetch.load(Ordering::Relaxed);
         format!(
-            "query: {}, rough: {}, precise: {}, ratio: {:.2}",
+            "query: {}, rough: {}, precise: {}, ratio: {:.2}, s3 fetch: {}",
             self.query.load(Ordering::Relaxed),
             rough,
             precise,
             rough as f64 / precise as f64,
+            s3,
         )
     }
 
@@ -49,6 +54,11 @@ impl Metrics {
     /// add query count
     pub fn add_query_count(&self, count: u64) {
         self.query.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// add s3 fetch count
+    pub fn add_s3_fetch_count(&self, count: u64) {
+        self.s3_fetch.fetch_add(count, Ordering::Relaxed);
     }
 }
 

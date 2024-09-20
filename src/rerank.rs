@@ -36,11 +36,22 @@ impl ReRanker {
         }
     }
 
-    pub async fn rank_batch_async(&mut self, rough_distances: &[(f32, u32)], map_ids: &[u32]) {
+    pub async fn rank_batch_async(
+        &mut self,
+        rough_distances: &[(f32, u32)],
+        map_ids: &[u32],
+        index: u32,
+    ) {
         match self {
-            ReRanker::Heap(re_ranker) => re_ranker.rank_batch_async(rough_distances, map_ids).await,
+            ReRanker::Heap(re_ranker) => {
+                re_ranker
+                    .rank_batch_async(rough_distances, map_ids, index)
+                    .await
+            }
             ReRanker::Heuristic(re_ranker) => {
-                re_ranker.rank_batch_async(rough_distances, map_ids).await
+                re_ranker
+                    .rank_batch_async(rough_distances, map_ids, index)
+                    .await
             }
         }
     }
@@ -55,7 +66,12 @@ impl ReRanker {
 
 pub trait ReRankerTrait {
     fn rank_batch(&mut self, rough_distances: &[(f32, u32)], base: &MatRef<f32>, map_ids: &[u32]);
-    async fn rank_batch_async(&mut self, rough_distances: &[(f32, u32)], map_ids: &[u32]);
+    async fn rank_batch_async(
+        &mut self,
+        rough_distances: &[(f32, u32)],
+        map_ids: &[u32],
+        index: u32,
+    );
     fn get_result(&self) -> Vec<(f32, u32)>;
 }
 
@@ -100,16 +116,23 @@ impl ReRankerTrait for HeapReRanker {
         METRICS.add_rough_count(rough_distances.len() as u64);
     }
 
-    async fn rank_batch_async(&mut self, rough_distances: &[(f32, u32)], map_ids: &[u32]) {
+    async fn rank_batch_async(
+        &mut self,
+        rough_distances: &[(f32, u32)],
+        map_ids: &[u32],
+        index: u32,
+    ) {
         let mut precise = 0;
-        for &(rough, u) in rough_distances.iter() {
+        let entry = CACHED_VECTOR
+            .get()
+            .expect("cache not initialized")
+            .get_mat(index)
+            .await
+            .expect("failed to get mat");
+        let mat = entry.value().as_ref();
+        for (i, &(rough, u)) in rough_distances.iter().enumerate() {
             if rough < self.threshold {
-                let accurate = CACHED_VECTOR
-                    .get()
-                    .expect("cache not initialized")
-                    .get_l2_squared_distance(u as usize, &self.query.as_ref())
-                    .await
-                    .expect("failed to get accurate distance");
+                let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
                 precise += 1;
                 if accurate < self.threshold {
                     self.heap.push((accurate.into(), map_ids[u as usize]));
@@ -179,16 +202,23 @@ impl ReRankerTrait for HeuristicReRanker {
         METRICS.add_rough_count(rough_distances.len() as u64);
     }
 
-    async fn rank_batch_async(&mut self, rough_distances: &[(f32, u32)], map_ids: &[u32]) {
+    async fn rank_batch_async(
+        &mut self,
+        rough_distances: &[(f32, u32)],
+        map_ids: &[u32],
+        index: u32,
+    ) {
         let mut precise = 0;
-        for &(rough, u) in rough_distances.iter() {
+        let entry = CACHED_VECTOR
+            .get()
+            .expect("cache not initialized")
+            .get_mat(index)
+            .await
+            .expect("failed to get mat");
+        let mat = entry.value().as_ref();
+        for (i, &(rough, u)) in rough_distances.iter().enumerate() {
             if rough < self.threshold {
-                let accurate = CACHED_VECTOR
-                    .get()
-                    .expect("cache not initialized")
-                    .get_l2_squared_distance(u as usize, &self.query.as_ref())
-                    .await
-                    .expect("failed to get accurate distance");
+                let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
                 precise += 1;
                 if accurate < self.threshold {
                     self.array.push((accurate, map_ids[u as usize]));

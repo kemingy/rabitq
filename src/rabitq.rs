@@ -57,6 +57,11 @@ impl RaBitQ {
         self.map_ids.len() as u32
     }
 
+    /// Get the offsets
+    pub fn offsets(&self) -> &[u32] {
+        &self.offsets
+    }
+
     /// Load from dir.
     pub fn load_from_dir(path: &Path) -> Self {
         let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
@@ -401,7 +406,7 @@ impl RaBitQ {
                 &mut rough_distances,
             );
             re_ranker
-                .rank_batch_async(&rough_distances, &self.map_ids)
+                .rank_batch_async(&rough_distances, &self.map_ids, i as u32)
                 .await;
             rough_distances.clear();
         }
