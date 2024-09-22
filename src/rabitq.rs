@@ -27,7 +27,7 @@ pub struct RaBitQ {
     centroids: Mat<f32>,
     offsets: Vec<u32>,
     map_ids: Vec<u32>,
-    x_binary_vec: Vec<Vec<u64>>,
+    x_binary_vec: Vec<u64>,
     x_c_distance_square: Vec<f32>,
     error_bound: Vec<f32>,
     factor_ip: Vec<f32>,
@@ -63,8 +63,11 @@ impl RaBitQ {
         let error_bound = factors[2].clone();
         let x_c_distance_square = factors[3].clone();
 
-        let x_binary_vec =
-            read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
+        let x_binary_vec = read_u64_vecs(&path.join("x_binary_vec.u64vecs"))
+            .expect("open x_binary_vec error")
+            .into_iter()
+            .flatten()
+            .collect();
 
         let dim = orthogonal.nrows();
         let base = matrix_from_fvecs(&path.join("base.fvecs"))
@@ -113,7 +116,8 @@ impl RaBitQ {
         .expect("write factors error");
         write_vecs(
             &path.join("x_binary_vec.u64vecs"),
-            &self.x_binary_vec.iter().collect::<Vec<_>>(),
+            // &self.x_binary_vec.iter().collect::<Vec<_>>(),
+            &[&self.x_binary_vec],
         )
         .expect("write x_binary_vec error");
     }
@@ -187,7 +191,7 @@ impl RaBitQ {
             .to_owned();
         let x_binary_vec = flat_labels
             .iter()
-            .map(|i| x_binary_vec[*i as usize].clone())
+            .flat_map(|i| x_binary_vec[*i as usize].clone())
             .collect();
         let x_c_distance_square = flat_labels
             .iter()
@@ -227,6 +231,7 @@ impl RaBitQ {
         topk: usize,
         heuristic_rank: bool,
     ) -> Vec<(f32, u32)> {
+        assert_eq!(self.dim as usize, query.nrows());
         let y_projected = project(query, &self.orthogonal.as_ref());
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
@@ -287,6 +292,7 @@ impl RaBitQ {
         rough_distances: &mut Vec<(f32, u32)>,
     ) {
         let dist_sqrt = y_c_distance_square.sqrt();
+        let binary_offset = y_binary_vec.len() / THETA_LOG_DIM as usize;
         for j in self.offsets[cluster_id]..self.offsets[cluster_id + 1] {
             let ju = j as usize;
             rough_distances.push((
@@ -294,8 +300,10 @@ impl RaBitQ {
                     + y_c_distance_square
                     + lower_bound * self.factor_ppc[ju]
                     + (2.0
-                        * asymmetric_binary_dot_product(&self.x_binary_vec[ju], y_binary_vec)
-                            as f32
+                        * asymmetric_binary_dot_product(
+                            &self.x_binary_vec[ju * binary_offset..(ju + 1) * binary_offset],
+                            y_binary_vec,
+                        ) as f32
                         - scalar_sum)
                         * self.factor_ip[ju]
                         * delta
