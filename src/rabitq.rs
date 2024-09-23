@@ -17,21 +17,49 @@ use crate::utils::{
     vector_binarize_u64, write_matrix, write_vecs,
 };
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[repr(C)]
+struct Factor {
+    factor_ip: f32,
+    factor_ppc: f32,
+    error_bound: f32,
+    center_distance_square: f32,
+}
+
+impl Factor {
+    fn into_vec(self) -> Vec<f32> {
+        vec![
+            self.factor_ip,
+            self.factor_ppc,
+            self.error_bound,
+            self.center_distance_square,
+        ]
+    }
+}
+
+impl From<Vec<f32>> for Factor {
+    fn from(f32s: Vec<f32>) -> Self {
+        assert_eq!(f32s.len(), 4);
+        Self {
+            factor_ip: f32s[0],
+            factor_ppc: f32s[1],
+            error_bound: f32s[2],
+            center_distance_square: f32s[3],
+        }
+    }
+}
 /// RaBitQ struct.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaBitQ {
     dim: u32,
     base: Mat<f32>,
     orthogonal: Mat<f32>,
-    rand_bias: Vec<f32>,
     centroids: Mat<f32>,
+    rand_bias: Vec<f32>,
     offsets: Vec<u32>,
     map_ids: Vec<u32>,
     x_binary_vec: Vec<u64>,
-    x_c_distance_square: Vec<f32>,
-    error_bound: Vec<f32>,
-    factor_ip: Vec<f32>,
-    factor_ppc: Vec<f32>,
+    factors: Vec<Factor>,
 }
 
 impl RaBitQ {
@@ -57,11 +85,14 @@ impl RaBitQ {
         let offsets = offsets_ids.first().expect("offsets is empty").clone();
         let map_ids = offsets_ids.last().expect("map_ids is empty").clone();
 
-        let factors = read_vecs::<f32>(&path.join("factors.fvecs")).expect("open factors error");
-        let factor_ip = factors[0].clone();
-        let factor_ppc = factors[1].clone();
-        let error_bound = factors[2].clone();
-        let x_c_distance_square = factors[3].clone();
+        let factors = read_vecs::<f32>(&path.join("factors.fvecs"))
+            .expect("open factors error")
+            .into_iter()
+            .flatten()
+            .collect::<Vec<f32>>()
+            .chunks_exact(4)
+            .map(|f| f.to_vec().into())
+            .collect();
 
         let x_binary_vec = read_u64_vecs(&path.join("x_binary_vec.u64vecs"))
             .expect("open x_binary_vec error")
@@ -83,10 +114,7 @@ impl RaBitQ {
             offsets,
             map_ids,
             x_binary_vec,
-            x_c_distance_square,
-            error_bound,
-            factor_ip,
-            factor_ppc,
+            factors,
         }
     }
 
@@ -106,12 +134,11 @@ impl RaBitQ {
         .expect("write offsets_ids error");
         write_vecs(
             &path.join("factors.fvecs"),
-            &[
-                &self.factor_ip,
-                &self.factor_ppc,
-                &self.error_bound,
-                &self.x_c_distance_square,
-            ],
+            &[&self
+                .factors
+                .iter()
+                .flat_map(|f| f.into_vec())
+                .collect::<Vec<_>>()],
         )
         .expect("write factors error");
         write_vecs(
@@ -140,7 +167,7 @@ impl RaBitQ {
         // k-means
         let dim_sqrt = (dim as f32).sqrt();
         let mut labels = vec![Vec::new(); k];
-        let mut x_c_distance_square = vec![0.0; n];
+        let mut factors = vec![Factor::default(); n];
         let mut x_c_distance = vec![0.0; n];
         let mut x_binary_vec: Vec<Vec<u64>> = Vec::with_capacity(n);
         let mut x_signed_vec: Vec<Col<f32>> = Vec::with_capacity(n);
@@ -153,7 +180,7 @@ impl RaBitQ {
             labels[min_label].push(i as u32);
             let x_c_quantized = xp - centroids.col(min_label);
             x_c_distance[i] = x_c_quantized.norm_l2();
-            x_c_distance_square[i] = x_c_distance[i].powi(2);
+            factors[i].center_distance_square = x_c_distance[i].powi(2);
             x_binary_vec.push(vector_binarize_u64(&x_c_quantized.as_ref()));
             x_signed_vec.push(vector_binarize_one(&x_c_quantized.as_ref()));
             let norm = x_c_distance[i] * dim_sqrt;
@@ -166,17 +193,15 @@ impl RaBitQ {
 
         // factors
         debug!("computing factors...");
-        let mut error_bound = Vec::with_capacity(n);
-        let mut factor_ip = Vec::with_capacity(n);
-        let mut factor_ppc: Vec<f32> = Vec::with_capacity(n);
         let error_base = 2.0 * EPSILON / (dim as f32 - 1.0).sqrt();
         let one_vec: Row<f32> = Row::ones(dim);
         for i in 0..n {
             let x_c_over_ip = x_c_distance[i] / x_dot_product[i];
-            error_bound
-                .push(error_base * (x_c_over_ip * x_c_over_ip - x_c_distance_square[i]).sqrt());
-            factor_ip.push(-2.0 / dim_sqrt * x_c_over_ip);
-            factor_ppc.push(factor_ip[i] * (&one_vec * &x_signed_vec[i]));
+            let factor = &mut factors[i];
+            factor.error_bound =
+                error_base * (x_c_over_ip * x_c_over_ip - factor.center_distance_square).sqrt();
+            factor.factor_ip = -2.0 / dim_sqrt * x_c_over_ip;
+            factor.factor_ppc = factor.factor_ip * (&one_vec * &x_signed_vec[i]);
         }
 
         // sort by labels
@@ -193,19 +218,7 @@ impl RaBitQ {
             .iter()
             .flat_map(|i| x_binary_vec[*i as usize].clone())
             .collect();
-        let x_c_distance_square = flat_labels
-            .iter()
-            .map(|i| x_c_distance_square[*i as usize])
-            .collect();
-        let error_bound = flat_labels
-            .iter()
-            .map(|i| error_bound[*i as usize])
-            .collect();
-        let factor_ip = flat_labels.iter().map(|i| factor_ip[*i as usize]).collect();
-        let factor_ppc = flat_labels
-            .iter()
-            .map(|i| factor_ppc[*i as usize])
-            .collect();
+        let factors = flat_labels.iter().map(|&i| factors[i as usize]).collect();
 
         Self {
             dim: dim as u32,
@@ -216,10 +229,7 @@ impl RaBitQ {
             map_ids: flat_labels,
             centroids,
             x_binary_vec,
-            x_c_distance_square,
-            error_bound,
-            factor_ip,
-            factor_ppc,
+            factors,
         }
     }
 
@@ -295,19 +305,20 @@ impl RaBitQ {
         let binary_offset = y_binary_vec.len() / THETA_LOG_DIM as usize;
         for j in self.offsets[cluster_id]..self.offsets[cluster_id + 1] {
             let ju = j as usize;
+            let factor = &self.factors[ju];
             rough_distances.push((
-                (self.x_c_distance_square[ju]
+                (factor.center_distance_square
                     + y_c_distance_square
-                    + lower_bound * self.factor_ppc[ju]
+                    + lower_bound * factor.factor_ppc
                     + (2.0
                         * asymmetric_binary_dot_product(
                             &self.x_binary_vec[ju * binary_offset..(ju + 1) * binary_offset],
                             y_binary_vec,
                         ) as f32
                         - scalar_sum)
-                        * self.factor_ip[ju]
+                        * factor.factor_ip
                         * delta
-                    - self.error_bound[ju] * dist_sqrt),
+                    - factor.error_bound * dist_sqrt),
                 j,
             ));
         }
