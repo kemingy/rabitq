@@ -143,14 +143,20 @@ impl RaBitQ {
         let offsets = offsets_ids.first().expect("offsets is empty").clone();
         let map_ids = offsets_ids.last().expect("map_ids is empty").clone();
 
-        let factors = read_vecs::<f32>(&path.join("factors.fvecs")).expect("open factors error");
-        let factor_ip = factors[0].clone();
-        let factor_ppc = factors[1].clone();
-        let error_bound = factors[2].clone();
-        let x_c_distance_square = factors[3].clone();
+        let factors = read_vecs::<f32>(&path.join("factors.fvecs"))
+            .expect("open factors error")
+            .into_iter()
+            .flatten()
+            .collect::<Vec<f32>>()
+            .chunks_exact(4)
+            .map(|f| f.to_vec().into())
+            .collect();
 
-        let x_binary_vec =
-            read_u64_vecs(&path.join("x_binary_vec.u64vecs")).expect("open x_binary_vec error");
+        let x_binary_vec = read_u64_vecs(&path.join("x_binary_vec.u64vecs"))
+            .expect("open x_binary_vec error")
+            .into_iter()
+            .flatten()
+            .collect();
 
         let dim = orthogonal.nrows();
 
@@ -162,11 +168,8 @@ impl RaBitQ {
             rand_bias: gen_random_bias(dim),
             offsets,
             map_ids,
+            factors,
             x_binary_vec,
-            x_c_distance_square,
-            error_bound,
-            factor_ip,
-            factor_ppc,
         }
     }
 
