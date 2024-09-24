@@ -157,11 +157,14 @@ pub async fn download_meta_from_s3(bucket: &str, prefix: &str, path: &Path) -> a
 #[derive(Debug)]
 pub struct CachedVector {
     dim: u32,
+    num_per_block: u32,
+    total_num: u32,
+    total_block: u32,
     offsets: Vec<u32>,
     s3_bucket: Arc<String>,
-    s3_prefix: Arc<String>,
+    s3_key: Arc<String>,
     s3_client: Arc<Client>,
-    cache: HybridCache<u32, Arc<Mat<f32>>>,
+    cache: HybridCache<u32, Mat<f32>>,
 }
 
 impl CachedVector {
@@ -179,11 +182,17 @@ impl CachedVector {
             .load()
             .await;
         let s3_client = Arc::new(Client::new(&s3_config));
+        let num_per_block = crate::consts::BLOCK_BYTE_LIMIT / (4 * (dim + 1));
+        let total_num = offsets.last().unwrap().clone();
+        let total_block = (total_num + num_per_block - 1) / num_per_block;
         Self {
             dim,
+            num_per_block,
+            total_num,
+            total_block,
             offsets,
             s3_bucket: Arc::new(s3_bucket),
-            s3_prefix: Arc::new(format!("{}/base.fvecs", s3_prefix)),
+            s3_key: Arc::new(format!("{}/base.fvecs", s3_prefix)),
             cache: HybridCacheBuilder::new()
                 .memory(mem_cache_num as usize)
                 .storage()
@@ -206,18 +215,14 @@ impl CachedVector {
         }
     }
 
-    fn block_range_bytes(&self, index: usize) -> (usize, usize) {
-        // let start = 4 * block * (self.dim as usize + 1) * self.num_per_block as usize;
-        // let end = if block == self.block_num as usize - 1 {
-        //     4 * (self.dim as usize + 1) * self.num as usize
-        // } else {
-        //     4 * (block + 1) * (self.dim as usize + 1) * self.num_per_block as usize
-        // };
-        // (start, end - 1)
-        (
-            (4 * self.offsets[index] * (self.dim + 1)) as usize,
-            (4 * self.offsets[index + 1] * (self.dim + 1) - 1) as usize,
-        )
+    fn block_range_bytes(&self, block: usize) -> (usize, usize) {
+        let start = 4 * block * (self.dim as usize + 1) * self.num_per_block as usize;
+        let end = if block == self.total_block as usize - 1 {
+            4 * (self.dim as usize + 1) * self.total_num as usize
+        } else {
+            4 * (block + 1) * (self.dim as usize + 1) * self.num_per_block as usize
+        };
+        (start, end - 1)
     }
 
     async fn fetch_from_s3(&self, index: usize) -> anyhow::Result<()> {
@@ -226,7 +231,7 @@ impl CachedVector {
             .s3_client
             .get_object()
             .bucket(self.s3_bucket.as_ref())
-            .key(self.s3_prefix.as_ref())
+            .key(self.s3_key.as_ref())
             .range(format!("bytes={}-{}", start, end))
             .send()
             .await?;
@@ -235,24 +240,47 @@ impl CachedVector {
         let mat = Mat::from_fn(vecs.len(), vecs[0].nrows(), |i, j| vecs[i][j])
             .transpose()
             .to_owned();
-        self.cache.insert(index as u32, Arc::new(mat));
+        self.cache.insert(index as u32, mat);
         Ok(())
     }
 
-    /// Get the cache entry.
-    pub async fn get_mat(&self, index: u32) -> anyhow::Result<CacheEntry<u32, Arc<Mat<f32>>>> {
+    /// Get the vector l2 ** 2 distance.
+    pub async fn get_vec_l2_square_distance(&self, index: u32, query: &ColRef<'_, f32>) -> f32 {
+        let block = index / self.num_per_block;
+        let offset = (index % self.num_per_block) as usize;
+        let entry = self.cache.get(&block).await.expect("failed to get cache entry");
+        if let Some(e) = entry {
+            return unsafe {crate::simd::l2_squared_distance(&e.col(offset), query)};
+        }
+        self.fetch_from_s3(block as usize).await.expect("failed to fetch from s3");
+        if let Some(e) = self.cache.get(&block).await.expect("failed to re-get cache entry") {
+            unsafe {crate::simd::l2_squared_distance(&e.col(offset), query)}
+        } else {
+            0.0
+        }
+    }
+
+    fn posting_list_range(&self, index: usize) -> (usize, usize) {
+        (
+            (4 * self.offsets[index] * (self.dim + 1)) as usize,
+            (4 * self.offsets[index + 1] * (self.dim + 1) - 1) as usize,
+        )
+    }
+
+    /// Get the matrix cache entry.
+    pub async fn get_mat(&self, index: u32) -> anyhow::Result<CacheEntry<u32, Mat<f32>>> {
         let entry = self
             .cache
             .fetch(index, || {
-                let (start, end) = self.block_range_bytes(index as usize);
+                let (start, end) = self.posting_list_range(index as usize);
                 let client = self.s3_client.clone();
                 let s3_bucket = self.s3_bucket.clone();
-                let s3_prefix = self.s3_prefix.clone();
+                let s3_key = self.s3_key.clone();
                 async move {
                     let object = client
                         .get_object()
                         .bucket(s3_bucket.as_ref())
-                        .key(s3_prefix.as_ref())
+                        .key(s3_key.as_ref())
                         .range(format!("bytes={}-{}", start, end))
                         .send()
                         .await?;
@@ -262,7 +290,7 @@ impl CachedVector {
                     let mat = Mat::from_fn(vecs.len(), vecs[0].nrows(), |i, j| vecs[i][j])
                         .transpose()
                         .to_owned();
-                    Ok(Arc::new(mat))
+                    Ok(mat)
                 }
             })
             .await?;

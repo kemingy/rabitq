@@ -120,19 +120,21 @@ impl ReRankerTrait for HeapReRanker {
         &mut self,
         rough_distances: &[(f32, u32)],
         map_ids: &[u32],
-        index: u32,
+        _index: u32,
     ) {
         let mut precise = 0;
-        let entry = CACHED_VECTOR
-            .get()
-            .expect("cache not initialized")
-            .get_mat(index)
-            .await
-            .expect("failed to get mat");
-        let mat = entry.value().as_ref();
-        for (i, &(rough, u)) in rough_distances.iter().enumerate() {
+        let cache = CACHED_VECTOR.get().expect("cache not initialized");
+        // let entry = CACHED_VECTOR
+        //     .get()
+        //     .expect("cache not initialized")
+        //     .get_mat(index)
+        //     .await
+        //     .expect("failed to get mat");
+        // let mat = entry.value().as_ref();
+        for (_i, &(rough, u)) in rough_distances.iter().enumerate() {
             if rough < self.threshold {
-                let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
+                // let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
+                let accurate = cache.get_vec_l2_square_distance(u, &self.query.as_ref()).await;
                 precise += 1;
                 if accurate < self.threshold {
                     self.heap.push((accurate.into(), map_ids[u as usize]));
