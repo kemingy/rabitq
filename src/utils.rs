@@ -248,7 +248,7 @@ pub fn project(vec: &ColRef<f32>, orthogonal: &MatRef<f32>) -> Col<f32> {
 }
 
 /// Find the nearest cluster for the given vector.
-pub fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> usize {
+pub fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> (usize, f32) {
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
     for (j, centroid) in centroids.col_iter().enumerate() {
@@ -258,7 +258,7 @@ pub fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> usi
             min_label = j;
         }
     }
-    min_label
+    (min_label, min_dist)
 }
 
 /// Read the fvces/ivces file.

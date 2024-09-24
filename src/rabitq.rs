@@ -176,8 +176,8 @@ impl RaBitQ {
             if i % 5000 == 0 {
                 debug!("\t> preprocessing {}...", i);
             }
-            let min_label = kmeans_nearest_cluster(&centroids.as_ref(), &xp);
-            labels[min_label].push(i as u32);
+            let (min_label, min_dist) = kmeans_nearest_cluster(&centroids.as_ref(), &xp);
+            labels[min_label].push((i as u32, min_dist));
             let x_c_quantized = xp - centroids.col(min_label);
             x_c_distance[i] = x_c_quantized.norm_l2();
             factors[i].center_distance_square = x_c_distance[i].powi(2);
@@ -205,6 +205,13 @@ impl RaBitQ {
         }
 
         // sort by labels
+        let labels = labels
+            .into_iter()
+            .map(|mut v| {
+                v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                v.into_iter().map(|(i, _)| i).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         debug!("sort by labels...");
         let mut offsets = vec![0; k + 1];
         for i in 0..k {
