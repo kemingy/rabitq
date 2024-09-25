@@ -7,7 +7,7 @@ use faer::{Col, ColRef, MatRef};
 use crate::cache::CACHED_VECTOR;
 use crate::consts::WINDOW_SIZE;
 use crate::metrics::METRICS;
-use crate::ord32::Ord32;
+use crate::ord32::{AlwaysEqual, Ord32};
 use crate::utils::l2_squared_distance;
 
 pub enum ReRanker {
@@ -79,7 +79,7 @@ pub trait ReRankerTrait {
 pub struct HeapReRanker {
     threshold: f32,
     topk: usize,
-    heap: BinaryHeap<(Ord32, u32)>,
+    heap: BinaryHeap<(Ord32, AlwaysEqual<u32>)>,
     query: Col<f32>,
 }
 
@@ -102,7 +102,8 @@ impl ReRankerTrait for HeapReRanker {
                 let accurate = l2_squared_distance(&base.col(u as usize), &self.query.as_ref());
                 precise += 1;
                 if accurate < self.threshold {
-                    self.heap.push((accurate.into(), map_ids[u as usize]));
+                    self.heap
+                        .push((accurate.into(), AlwaysEqual(map_ids[u as usize])));
                     if self.heap.len() > self.topk {
                         self.heap.pop();
                     }
@@ -152,7 +153,10 @@ impl ReRankerTrait for HeapReRanker {
     }
 
     fn get_result(&self) -> Vec<(f32, u32)> {
-        self.heap.iter().map(|&(a, b)| (a.into(), b)).collect()
+        self.heap
+            .iter()
+            .map(|&(a, AlwaysEqual(b))| (a.into(), b))
+            .collect()
     }
 }
 
