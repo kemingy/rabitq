@@ -36,3 +36,27 @@ impl From<Ord32> for f32 {
         x.to_f32()
     }
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(transparent)]
+pub struct AlwaysEqual<T>(pub T);
+
+impl<T> PartialEq for AlwaysEqual<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for AlwaysEqual<T> {}
+
+impl<T> PartialOrd for AlwaysEqual<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for AlwaysEqual<T> {
+    fn cmp(&self, _: &Self) -> std::cmp::Ordering {
+        std::cmp::Ordering::Equal
+    }
+}

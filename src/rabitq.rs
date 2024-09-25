@@ -294,7 +294,7 @@ impl RaBitQ {
         }
 
         METRICS.add_query_count(1);
-        re_ranker.get_result()
+        re_ranker.get_result(&self.base.as_ref(), &self.map_ids)
     }
 
     #[allow(clippy::too_many_arguments)]
