@@ -817,6 +817,7 @@ dependencies = [
  "log",
  "num-traits",
  "rand",
+ "rand_distr",
  "serde",
  "serde_json",
 ]

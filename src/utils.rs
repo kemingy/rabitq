@@ -7,14 +7,14 @@ use std::path::Path;
 use faer::{Col, ColRef, Mat, MatRef};
 use num_traits::{FromBytes, ToBytes};
 use rand::distributions::{Distribution, Uniform};
+use rand_distr::StandardNormal;
 
 use crate::consts::THETA_LOG_DIM;
 
 /// Generate a random orthogonal matrix from QR decomposition.
 pub fn gen_random_qr_orthogonal(dim: usize) -> Mat<f32> {
     let mut rng = rand::thread_rng();
-    let uniform = Uniform::<f32>::new(0.0, 1.0);
-    let random = Mat::from_fn(dim, dim, |_, _| uniform.sample(&mut rng));
+    let random: Mat<f32> = Mat::from_fn(dim, dim, |_, _| StandardNormal.sample(&mut rng));
     random.qr().compute_q()
 }
 
