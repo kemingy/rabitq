@@ -1,20 +1,20 @@
 //! Utility functions for the project.
 
-use std::cmp::min;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use faer::{Col, ColRef, Mat, MatRef};
 use num_traits::{FromBytes, ToBytes};
-use rand::{thread_rng, Rng};
+use rand::distributions::{Distribution, Uniform};
 
 use crate::consts::THETA_LOG_DIM;
 
 /// Generate a random orthogonal matrix from QR decomposition.
 pub fn gen_random_qr_orthogonal(dim: usize) -> Mat<f32> {
-    let mut rng = thread_rng();
-    let random = Mat::from_fn(dim, dim, |_, _| rng.gen::<f32>());
+    let mut rng = rand::thread_rng();
+    let uniform = Uniform::<f32>::new(0.0, 1.0);
+    let random = Mat::from_fn(dim, dim, |_, _| uniform.sample(&mut rng));
     random.qr().compute_q()
 }
 
@@ -34,8 +34,9 @@ pub fn gen_fixed_bias(dim: usize) -> Mat<f32> {
 
 /// Generate a random bias vector.
 pub fn gen_random_bias(dim: usize) -> Vec<f32> {
-    let mut rng = thread_rng();
-    (0..dim).map(|_| rng.gen::<f32>()).collect()
+    let mut rng = rand::thread_rng();
+    let uniform = Uniform::<f32>::new(0.0, 1.0);
+    (0..dim).map(|_| uniform.sample(&mut rng)).collect()
 }
 
 /// Convert a vector to a dynamic vector.
@@ -351,7 +352,7 @@ where
 /// Calculate the recall.
 pub fn calculate_recall(truth: &[i32], res: &[i32], topk: usize) -> f32 {
     let mut count = 0;
-    let length = min(topk, truth.len());
+    let length = topk.min(truth.len());
     for t in truth.iter().take(length) {
         for y in res.iter().take(length.min(res.len())) {
             if *t == *y {
