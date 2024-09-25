@@ -138,7 +138,7 @@ impl ReRankerTrait for HeapReRanker {
                 let accurate = cache.get_vec_l2_square_distance(u, &self.query.as_ref()).await;
                 precise += 1;
                 if accurate < self.threshold {
-                    self.heap.push((accurate.into(), map_ids[u as usize]));
+                    self.heap.push((accurate.into(), AlwaysEqual(map_ids[u as usize])));
                     if self.heap.len() > self.topk {
                         self.heap.pop();
                     }
