@@ -4,7 +4,8 @@ use std::collections::BinaryHeap;
 
 use faer::{Col, ColRef, MatRef};
 
-use crate::cache::CACHED_VECTOR;
+// use crate::cache::CACHED_VECTOR;
+use crate::cache::CachedVector;
 use crate::consts::WINDOW_SIZE;
 use crate::metrics::METRICS;
 use crate::ord32::{AlwaysEqual, Ord32};
@@ -41,16 +42,17 @@ impl ReRanker {
         rough_distances: &[(f32, u32)],
         map_ids: &[u32],
         index: u32,
+        cache: &CachedVector,
     ) {
         match self {
             ReRanker::Heap(re_ranker) => {
                 re_ranker
-                    .rank_batch_async(rough_distances, map_ids, index)
+                    .rank_batch_async(rough_distances, map_ids, index, cache)
                     .await
             }
             ReRanker::Heuristic(re_ranker) => {
                 re_ranker
-                    .rank_batch_async(rough_distances, map_ids, index)
+                    .rank_batch_async(rough_distances, map_ids, index, cache)
                     .await
             }
         }
@@ -71,6 +73,7 @@ pub trait ReRankerTrait {
         rough_distances: &[(f32, u32)],
         map_ids: &[u32],
         index: u32,
+        cache: &CachedVector,
     );
     fn get_result(&self) -> Vec<(f32, u32)>;
 }
@@ -81,6 +84,7 @@ pub struct HeapReRanker {
     topk: usize,
     heap: BinaryHeap<(Ord32, AlwaysEqual<u32>)>,
     query: Col<f32>,
+    query_vec: Vec<f32>,
 }
 
 impl HeapReRanker {
@@ -88,6 +92,7 @@ impl HeapReRanker {
         Self {
             threshold: f32::MAX,
             query: query.to_owned(),
+            query_vec: query.iter().copied().collect::<Vec<f32>>(),
             topk,
             heap: BinaryHeap::with_capacity(topk),
         }
@@ -122,23 +127,20 @@ impl ReRankerTrait for HeapReRanker {
         rough_distances: &[(f32, u32)],
         map_ids: &[u32],
         _index: u32,
+        cache: &CachedVector,
     ) {
         let mut precise = 0;
-        let cache = CACHED_VECTOR.get().expect("cache not initialized");
-        // let entry = CACHED_VECTOR
-        //     .get()
-        //     .expect("cache not initialized")
-        //     .get_mat(index)
-        //     .await
-        //     .expect("failed to get mat");
-        // let mat = entry.value().as_ref();
-        for (_i, &(rough, u)) in rough_distances.iter().enumerate() {
+        for &(rough, u) in rough_distances.iter() {
             if rough < self.threshold {
                 // let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
-                let accurate = cache.get_vec_l2_square_distance(u, &self.query.as_ref()).await;
+                let accurate = cache
+                    .get_query_vec_distance(&self.query_vec, u)
+                    .await
+                    .expect("failed to get distance");
                 precise += 1;
                 if accurate < self.threshold {
-                    self.heap.push((accurate.into(), AlwaysEqual(map_ids[u as usize])));
+                    self.heap
+                        .push((accurate.into(), AlwaysEqual(map_ids[u as usize])));
                     if self.heap.len() > self.topk {
                         self.heap.pop();
                     }
@@ -167,6 +169,7 @@ pub struct HeuristicReRanker {
     topk: usize,
     array: Vec<(f32, u32)>,
     query: Col<f32>,
+    query_vec: Vec<f32>,
     count: usize,
     window_size: usize,
 }
@@ -177,6 +180,7 @@ impl HeuristicReRanker {
             threshold: f32::MAX,
             recent_max_accurate: f32::MIN,
             query: query.to_owned(),
+            query_vec: query.iter().copied().collect::<Vec<f32>>(),
             topk,
             array: Vec::with_capacity(topk),
             count: 0,
@@ -213,18 +217,17 @@ impl ReRankerTrait for HeuristicReRanker {
         rough_distances: &[(f32, u32)],
         map_ids: &[u32],
         index: u32,
+        cache: &CachedVector,
     ) {
         let mut precise = 0;
-        let entry = CACHED_VECTOR
-            .get()
-            .expect("cache not initialized")
-            .get_mat(index)
-            .await
-            .expect("failed to get mat");
-        let mat = entry.value().as_ref();
-        for (i, &(rough, u)) in rough_distances.iter().enumerate() {
+        // let entry = cache.get_mat(index).await.expect("failed to get mat");
+        // let mat = entry.value().as_ref();
+        for &(rough, u) in rough_distances.iter() {
             if rough < self.threshold {
-                let accurate = l2_squared_distance(&self.query.as_ref(), &mat.col(i));
+                let accurate = cache
+                    .get_query_vec_distance(&self.query_vec, index)
+                    .await
+                    .expect("failed to get distance");
                 precise += 1;
                 if accurate < self.threshold {
                     self.array.push((accurate, map_ids[u as usize]));

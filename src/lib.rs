@@ -3,6 +3,7 @@
 #![forbid(missing_docs)]
 pub mod cache;
 mod consts;
+pub mod disk;
 pub mod metrics;
 mod ord32;
 pub mod rabitq;

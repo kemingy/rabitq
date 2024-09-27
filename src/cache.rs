@@ -6,118 +6,21 @@
 
 use std::io::Write;
 use std::path::Path;
-// use std::sync::atomic::AtomicU32;
-// use std::sync::{Arc, RwLock};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Ok;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use bytes::Buf;
-use faer::{Col, ColRef, Mat, MatRef};
-use foyer::{
-    CacheEntry, DirectFsDeviceOptionsBuilder, HybridCache, HybridCacheBuilder, RateLimitPicker,
-};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::metrics::METRICS;
 
-// use log::info;
-
-// use quick_cache::sync::{Cache, DefaultLifecycle};
-// use quick_cache::{DefaultHashBuilder, OptionsBuilder, UnitWeighter};
-
-// #[derive(Debug)]
-// struct CacheShard {
-//     vec: Vec<Option<Arc<Col<f32>>>>,
-// }
-
-// impl CacheShard {
-//     fn new(capacity: usize) -> Self {
-//         Self {
-//             vec: vec![None; capacity],
-//         }
-//     }
-
-//     fn get(&self, index: usize) -> Option<Arc<Col<f32>>> {
-//         self.vec[index].clone()
-//     }
-
-//     fn set(&mut self, index: usize, value: Arc<Col<f32>>) {
-//         self.vec[index] = Some(value);
-//     }
-// }
-
-// #[derive(Debug)]
-// struct Cache {
-//     limit: u32,
-//     shard_num: u32,
-//     counter: AtomicU32,
-//     hits: AtomicU32,
-//     misses: AtomicU32,
-//     shards: Box<[RwLock<CacheShard>]>,
-// }
-
-// impl Cache {
-//     fn new(capacity: usize, limit: u32, shard_num: u32) -> Self {
-//         let shard_cap = capacity.saturating_add(shard_num as usize - 1) / shard_num as usize;
-//         let shards = (0..shard_num)
-//             .map(|_| RwLock::new(CacheShard::new(shard_cap)))
-//             .collect::<Vec<_>>();
-//         Self {
-//             shards: shards.into_boxed_slice(),
-//             counter: AtomicU32::new(0),
-//             hits: AtomicU32::new(0),
-//             misses: AtomicU32::new(0),
-//             limit,
-//             shard_num,
-//         }
-//     }
-
-//     fn get(&self, key: &u32) -> Option<Arc<Col<f32>>> {
-//         let shard = &self.shards[(key % self.shard_num) as usize]
-//             .read()
-//             .expect("failed to read shard");
-//         let res = shard.get((key / self.shard_num) as usize);
-//         if res.is_some() {
-//             self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-//         } else {
-//             self.misses
-//                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-//         }
-//         res
-//     }
-
-//     fn set(&self, key: u32, value: Arc<Col<f32>>) {
-//         let num = self
-//             .counter
-//             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-//         if num >= self.limit {
-//             info!("cache reaching {} elements", num);
-//         }
-//         let shard = &mut self.shards[(key % self.shard_num) as usize]
-//             .write()
-//             .expect("failed to write shard");
-//         shard.set((key / self.shard_num) as usize, value);
-//     }
-
-//     fn len(&self) -> u32 {
-//         self.counter.load(std::sync::atomic::Ordering::Relaxed)
-//     }
-
-//     fn hits(&self) -> u32 {
-//         self.hits.load(std::sync::atomic::Ordering::Relaxed)
-//     }
-
-//     fn misses(&self) -> u32 {
-//         self.misses.load(std::sync::atomic::Ordering::Relaxed)
-//     }
-// }
-
-fn parse_fvecs(bytes: &mut impl Buf) -> Vec<Col<f32>> {
+fn parse_fvecs(bytes: &mut impl Buf) -> Vec<Vec<f32>> {
     let mut vecs = Vec::new();
     while bytes.has_remaining() {
         let dim = bytes.get_u32_le() as usize;
-        vecs.push(Col::from_fn(dim, |_| bytes.get_f32_le()));
+        vecs.push((0..dim).map(|_| bytes.get_f32_le()).collect());
     }
     vecs
 }
@@ -160,58 +63,49 @@ pub struct CachedVector {
     num_per_block: u32,
     total_num: u32,
     total_block: u32,
-    offsets: Vec<u32>,
     s3_bucket: Arc<String>,
     s3_key: Arc<String>,
     s3_client: Arc<Client>,
-    cache: HybridCache<u32, Mat<f32>>,
+    sqlite_conn: Mutex<Connection>,
 }
 
 impl CachedVector {
     /// init the cached vector.
     pub async fn new(
         dim: u32,
-        offsets: Vec<u32>,
+        num: u32,
         local_path: String,
         s3_bucket: String,
         s3_prefix: String,
-        mem_cache_num: u32,
-        disk_cache_mb: u32,
+        // _mem_cache_num: u32,
+        // _disk_cache_mb: u32,
     ) -> Self {
         let s3_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
             .load()
             .await;
         let s3_client = Arc::new(Client::new(&s3_config));
         let num_per_block = crate::consts::BLOCK_BYTE_LIMIT / (4 * (dim + 1));
-        let total_num = offsets.last().unwrap().clone();
+        let total_num = num;
         let total_block = (total_num + num_per_block - 1) / num_per_block;
+        let sqlite_conn = Connection::open(Path::new(&local_path)).expect("failed to open sqlite");
+        sqlite_conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS matrix (
+                id    INTEGER PRIMARY KEY,
+                vec   BLOB
+            )",
+                (),
+            )
+            .expect("failed to create table");
         Self {
             dim,
             num_per_block,
             total_num,
             total_block,
-            offsets,
             s3_bucket: Arc::new(s3_bucket),
             s3_key: Arc::new(format!("{}/base.fvecs", s3_prefix)),
-            cache: HybridCacheBuilder::new()
-                .memory(mem_cache_num as usize)
-                .storage()
-                .with_device_config(
-                    DirectFsDeviceOptionsBuilder::new(local_path.clone())
-                        .with_capacity(disk_cache_mb as usize * 1024 * 1024)
-                        .build(),
-                )
-                .with_admission_picker(Arc::new(RateLimitPicker::new(
-                    disk_cache_mb as usize * 1024 * 1024,
-                )))
-                .with_flushers(8)
-                .with_flush(true)
-                .with_reclaimers(8)
-                .with_clean_region_threshold(12)
-                .build()
-                .await
-                .expect("failed to create cache"),
             s3_client,
+            sqlite_conn: Mutex::new(sqlite_conn),
         }
     }
 
@@ -225,8 +119,9 @@ impl CachedVector {
         (start, end - 1)
     }
 
-    async fn fetch_from_s3(&self, index: usize) -> anyhow::Result<()> {
-        let (start, end) = self.block_range_bytes(index);
+    async fn fetch_from_s3(&self, index: usize, query: &[f32]) -> anyhow::Result<f32> {
+        let block = index / self.num_per_block as usize;
+        let (start, end) = self.block_range_bytes(block);
         let object = self
             .s3_client
             .get_object()
@@ -237,83 +132,40 @@ impl CachedVector {
             .await?;
         let mut bytes = object.body.collect().await?;
         let vecs = parse_fvecs(&mut bytes);
-        let mat = Mat::from_fn(vecs.len(), vecs[0].nrows(), |i, j| vecs[i][j])
-            .transpose()
-            .to_owned();
-        self.cache.insert(index as u32, mat);
-        Ok(())
+        METRICS.add_s3_fetch_count(1);
+        let offset_id = index % self.num_per_block as usize;
+        let start_id = index - offset_id;
+
+        {
+            let conn = self.sqlite_conn.lock().unwrap();
+            let mut statement = conn.prepare(
+                "INSERT INTO matrix (id, vec) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
+            )?;
+            for (i, vec) in vecs.iter().enumerate() {
+                statement.execute((start_id + i, bytemuck::cast_slice(vec)))?;
+            }
+        }
+
+        let distance = unsafe { crate::simd::vec_l2_squared_distance(&vecs[offset_id], query) };
+
+        Ok(distance)
     }
 
     /// Get the vector l2 ** 2 distance.
-    pub async fn get_vec_l2_square_distance(&self, index: u32, query: &ColRef<'_, f32>) -> f32 {
-        let block = index / self.num_per_block;
-        let offset = (index % self.num_per_block) as usize;
-        let entry = self.cache.get(&block).await.expect("failed to get cache entry");
-        if let Some(e) = entry {
-            return unsafe {crate::simd::l2_squared_distance(&e.col(offset), query)};
+    pub async fn get_query_vec_distance(&self, query: &[f32], index: u32) -> anyhow::Result<f32> {
+        {
+            let conn = self.sqlite_conn.lock().unwrap();
+            let mut statement = conn.prepare("SELECT vec FROM matrix WHERE id = ?1")?;
+            if let Some(raw) = statement
+                .query_row([index], |res| res.get::<_, Vec<u8>>(0))
+                .optional()?
+            {
+                let res = unsafe {
+                    crate::simd::vec_l2_squared_distance(bytemuck::cast_slice(&raw), query)
+                };
+                return Ok(res);
+            }
         }
-        self.fetch_from_s3(block as usize).await.expect("failed to fetch from s3");
-        if let Some(e) = self.cache.get(&block).await.expect("failed to re-get cache entry") {
-            unsafe {crate::simd::l2_squared_distance(&e.col(offset), query)}
-        } else {
-            0.0
-        }
-    }
-
-    fn posting_list_range(&self, index: usize) -> (usize, usize) {
-        (
-            (4 * self.offsets[index] * (self.dim + 1)) as usize,
-            (4 * self.offsets[index + 1] * (self.dim + 1) - 1) as usize,
-        )
-    }
-
-    /// Get the matrix cache entry.
-    pub async fn get_mat(&self, index: u32) -> anyhow::Result<CacheEntry<u32, Mat<f32>>> {
-        let entry = self
-            .cache
-            .fetch(index, || {
-                let (start, end) = self.posting_list_range(index as usize);
-                let client = self.s3_client.clone();
-                let s3_bucket = self.s3_bucket.clone();
-                let s3_key = self.s3_key.clone();
-                async move {
-                    let object = client
-                        .get_object()
-                        .bucket(s3_bucket.as_ref())
-                        .key(s3_key.as_ref())
-                        .range(format!("bytes={}-{}", start, end))
-                        .send()
-                        .await?;
-                    METRICS.add_s3_fetch_count(1);
-                    let mut bytes = object.body.collect().await?;
-                    let vecs = parse_fvecs(&mut bytes);
-                    let mat = Mat::from_fn(vecs.len(), vecs[0].nrows(), |i, j| vecs[i][j])
-                        .transpose()
-                        .to_owned();
-                    Ok(mat)
-                }
-            })
-            .await?;
-        Ok(entry)
-    }
-
-    /// Get the cache stats.
-    pub fn get_cache_stats(&self) -> String {
-        // format!(
-        //     "hits: {}, misses: {}, length: {}",
-        //     self.cache.hits(),
-        //     self.cache.misses(),
-        //     self.cache.len()
-        // )
-        let stats = self.cache.stats();
-        format!(
-            "read bytes: {}, write bytes: {}, flush: {}",
-            stats.read_bytes.load(std::sync::atomic::Ordering::Relaxed),
-            stats.write_bytes.load(std::sync::atomic::Ordering::Relaxed),
-            stats.flush_ios.load(std::sync::atomic::Ordering::Relaxed),
-        )
+        self.fetch_from_s3(index as usize, query).await
     }
 }
-
-/// Cached vector instance. Need to be initialized before using.
-pub static CACHED_VECTOR: OnceLock<CachedVector> = OnceLock::new();

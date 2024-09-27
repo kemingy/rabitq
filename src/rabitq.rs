@@ -17,13 +17,18 @@ use crate::utils::{
     vector_binarize_u64, write_matrix, write_vecs,
 };
 
+/// Factor struct to store the metadata for X.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
-struct Factor {
-    factor_ip: f32,
-    factor_ppc: f32,
-    error_bound: f32,
-    center_distance_square: f32,
+pub struct Factor {
+    /// ip
+    pub factor_ip: f32,
+    /// ppc
+    pub factor_ppc: f32,
+    /// error bound
+    pub error_bound: f32,
+    /// (c - x) ** 2
+    pub center_distance_square: f32,
 }
 
 impl Factor {
@@ -130,46 +135,6 @@ impl RaBitQ {
             map_ids,
             x_binary_vec,
             factors,
-        }
-    }
-
-    /// Load from dir with cache.
-    pub fn load_from_dir_with_cache(path: &Path) -> Self {
-        let orthogonal = matrix_from_fvecs(&path.join("orthogonal.fvecs"));
-        let centroids = matrix_from_fvecs(&path.join("centroids.fvecs"));
-
-        let offsets_ids =
-            read_vecs::<u32>(&path.join("offsets_ids.ivecs")).expect("open offsets_ids error");
-        let offsets = offsets_ids.first().expect("offsets is empty").clone();
-        let map_ids = offsets_ids.last().expect("map_ids is empty").clone();
-
-        let factors = read_vecs::<f32>(&path.join("factors.fvecs"))
-            .expect("open factors error")
-            .into_iter()
-            .flatten()
-            .collect::<Vec<f32>>()
-            .chunks_exact(4)
-            .map(|f| f.to_vec().into())
-            .collect();
-
-        let x_binary_vec = read_u64_vecs(&path.join("x_binary_vec.u64vecs"))
-            .expect("open x_binary_vec error")
-            .into_iter()
-            .flatten()
-            .collect();
-
-        let dim = orthogonal.nrows();
-
-        Self {
-            dim: dim as u32,
-            base: Mat::zeros(0, 0), // set to a dummy value since we will use cache
-            orthogonal,
-            centroids,
-            rand_bias: gen_random_bias(dim),
-            offsets,
-            map_ids,
-            factors,
-            x_binary_vec,
         }
     }
 
@@ -384,63 +349,5 @@ impl RaBitQ {
                 j,
             ));
         }
-    }
-
-    /// Query the topk nearest neighbors for the given query asynchronously.
-    pub async fn query_async(
-        &self,
-        query: &ColRef<'_, f32>,
-        probe: usize,
-        topk: usize,
-        heuristic_rank: bool,
-    ) -> Vec<(f32, u32)> {
-        let y_projected = project(query, &self.orthogonal.as_ref());
-        let k = self.centroids.shape().1;
-        let mut lists = Vec::with_capacity(k);
-        let mut residual = vec![0f32; self.dim as usize];
-        for (i, centroid) in self.centroids.col_iter().enumerate() {
-            let dist = l2_squared_distance(&centroid, &y_projected.as_ref());
-            lists.push((dist, i));
-        }
-        let length = probe.min(k);
-        lists.select_nth_unstable_by(length - 1, |a, b| a.0.total_cmp(&b.0));
-        lists.truncate(length);
-        lists.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-        let mut re_ranker = new_re_ranker(query, topk, heuristic_rank);
-        let mut rough_distances = Vec::new();
-        let mut quantized = vec![0u8; self.dim as usize];
-        let mut binary_vec = vec![0u64; self.dim as usize * THETA_LOG_DIM as usize / 64];
-        for &(dist, i) in lists[..length].iter() {
-            let (lower_bound, upper_bound) =
-                min_max_residual(&mut residual, &y_projected.as_ref(), &self.centroids.col(i));
-            let delta = (upper_bound - lower_bound) * SCALAR;
-            let one_over_delta = delta.recip();
-            let scalar_sum = scalar_quantize(
-                &mut quantized,
-                &residual,
-                &self.rand_bias,
-                lower_bound,
-                one_over_delta,
-            );
-            binary_vec.iter_mut().for_each(|element| *element = 0);
-            vector_binarize_query(&quantized, &mut binary_vec);
-            self.calculate_rough_distance(
-                dist,
-                &binary_vec,
-                lower_bound,
-                scalar_sum as f32,
-                delta,
-                i,
-                &mut rough_distances,
-            );
-            re_ranker
-                .rank_batch_async(&rough_distances, &self.map_ids, i as u32)
-                .await;
-            rough_distances.clear();
-        }
-
-        METRICS.add_query_count(1);
-        re_ranker.get_result()
     }
 }
