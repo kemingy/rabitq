@@ -2,7 +2,7 @@
 
 use std::collections::BinaryHeap;
 
-use faer::{Col, ColRef, MatRef};
+use faer::MatRef;
 
 use crate::consts::WINDOW_SIZE;
 use crate::metrics::METRICS;
@@ -14,7 +14,7 @@ pub enum ReRanker {
     Heuristic(HeuristicReRanker),
 }
 
-pub fn new_re_ranker(query: &ColRef<f32>, topk: usize, heuristic_rank: bool) -> ReRanker {
+pub fn new_re_ranker(query: Vec<f32>, topk: usize, heuristic_rank: bool) -> ReRanker {
     if heuristic_rank {
         ReRanker::Heuristic(HeuristicReRanker::new(query, topk))
     } else {
@@ -53,14 +53,14 @@ pub struct HeapReRanker {
     threshold: f32,
     topk: usize,
     heap: BinaryHeap<(Ord32, AlwaysEqual<u32>)>,
-    query: Col<f32>,
+    query: Vec<f32>,
 }
 
 impl HeapReRanker {
-    fn new(query: &ColRef<f32>, topk: usize) -> Self {
+    fn new(query: Vec<f32>, topk: usize) -> Self {
         Self {
             threshold: f32::MAX,
-            query: query.to_owned(),
+            query,
             topk,
             heap: BinaryHeap::with_capacity(topk),
         }
@@ -72,7 +72,12 @@ impl ReRankerTrait for HeapReRanker {
         let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
             if rough < self.threshold {
-                let accurate = l2_squared_distance(&base.col(u as usize), &self.query.as_ref());
+                let accurate = l2_squared_distance(
+                    base.col(u as usize)
+                        .try_as_slice()
+                        .expect("failed to get base slice"),
+                    &self.query,
+                );
                 precise += 1;
                 if accurate < self.threshold {
                     self.heap
@@ -81,7 +86,7 @@ impl ReRankerTrait for HeapReRanker {
                         self.heap.pop();
                     }
                     if self.heap.len() == self.topk {
-                        self.threshold = self.heap.peek().unwrap().0.into();
+                        self.threshold = self.heap.peek().expect("failed to peek heap").0.into();
                     }
                 }
             }
@@ -104,17 +109,17 @@ pub struct HeuristicReRanker {
     recent_max_accurate: f32,
     topk: usize,
     array: Vec<(f32, u32)>,
-    query: Col<f32>,
+    query: Vec<f32>,
     count: usize,
     window_size: usize,
 }
 
 impl HeuristicReRanker {
-    fn new(query: &ColRef<f32>, topk: usize) -> Self {
+    fn new(query: Vec<f32>, topk: usize) -> Self {
         Self {
             threshold: f32::MAX,
             recent_max_accurate: f32::MIN,
-            query: query.to_owned(),
+            query,
             topk,
             array: Vec::with_capacity(topk),
             count: 0,
@@ -128,7 +133,12 @@ impl ReRankerTrait for HeuristicReRanker {
         let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
             if rough < self.threshold {
-                let accurate = l2_squared_distance(&base.col(u as usize), &self.query.as_ref());
+                let accurate = l2_squared_distance(
+                    base.col(u as usize)
+                        .try_as_slice()
+                        .expect("failed to get base slice"),
+                    &self.query,
+                );
                 precise += 1;
                 if accurate < self.threshold {
                     self.array.push((accurate, map_ids[u as usize]));

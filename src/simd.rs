@@ -1,7 +1,5 @@
 //! Accelerate with SIMD.
 
-use faer::ColRef;
-
 use crate::consts::THETA_LOG_DIM;
 
 /// Compute the squared Euclidean distance between two vectors.
@@ -13,17 +11,17 @@ use crate::consts::THETA_LOG_DIM;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx")]
 #[inline]
-pub unsafe fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
+pub unsafe fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
 
-    assert_eq!(lhs.nrows(), rhs.nrows());
+    assert_eq!(lhs.len(), rhs.len());
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let block_16_num = lhs.nrows() >> 4;
-    let rest_num = lhs.nrows() & 0b1111;
+    let block_16_num = lhs.len() >> 4;
+    let rest_num = lhs.len() & 0b1111;
     let (mut diff, mut vx, mut vy): (__m256, __m256, __m256);
     let mut sum = _mm256_setzero_ps();
 
@@ -113,7 +111,7 @@ pub unsafe fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx")]
 #[inline]
-pub unsafe fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f32, f32) {
+pub unsafe fn min_max_residual(res: &mut [f32], x: &[f32], y: &[f32]) -> (f32, f32) {
     use std::arch::x86_64::*;
 
     let mut min_32x8 = _mm256_set1_ps(f32::MAX);
@@ -245,12 +243,12 @@ pub unsafe fn scalar_quantize(
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "fma,avx,avx2")]
 #[inline]
-pub unsafe fn vector_dot_product(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
+pub unsafe fn vector_dot_product(lhs: &[f32], rhs: &[f32]) -> f32 {
     use std::arch::x86_64::*;
 
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let length = lhs.nrows();
+    let length = lhs.len();
     let rest = length & 0b111;
     let (mut vx, mut vy): (__m256, __m256);
     let mut accumulate = _mm256_setzero_ps();

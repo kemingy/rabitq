@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use faer::row::from_slice as row_from_slice;
 use faer::{Col, ColRef, Mat, MatRef};
 use num_traits::{FromBytes, ToBytes};
 use rand::distributions::{Distribution, Uniform};
@@ -37,11 +38,6 @@ pub fn gen_random_bias(dim: usize) -> Vec<f32> {
     let mut rng = rand::thread_rng();
     let uniform = Uniform::<f32>::new(0.0, 1.0);
     (0..dim).map(|_| uniform.sample(&mut rng)).collect()
-}
-
-/// Convert a vector to a dynamic vector.
-pub fn matrix1d_from_vec(vec: &[f32]) -> Col<f32> {
-    Col::from_fn(vec.len(), |i| vec[i])
 }
 
 /// Read the fvecs file and convert it to a matrix.
@@ -140,13 +136,13 @@ pub fn asymmetric_binary_dot_product(x: &[u64], y: &[u64]) -> u32 {
 
 /// Calculate the L2 squared distance between two vectors.
 #[inline]
-pub fn l2_squared_distance(lhs: &ColRef<f32>, rhs: &ColRef<f32>) -> f32 {
+pub fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
             unsafe { crate::simd::l2_squared_distance(lhs, rhs) }
         } else {
-            (lhs - rhs).squared_norm_l2()
+            (row_from_slice(lhs) - row_from_slice(rhs)).squared_norm_l2()
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
@@ -177,7 +173,13 @@ pub fn min_max_residual(res: &mut [f32], x: &ColRef<f32>, y: &ColRef<f32>) -> (f
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx") {
-            unsafe { crate::simd::min_max_residual(res, x, y) }
+            unsafe {
+                crate::simd::min_max_residual(
+                    res,
+                    x.try_as_slice().expect("failed to get x slice"),
+                    y.try_as_slice().expect("failed to get y slice"),
+                )
+            }
         } else {
             min_max_raw(res, x, y)
         }
@@ -231,20 +233,26 @@ pub fn scalar_quantize(
 /// Project the vector to the orthogonal matrix.
 #[allow(dead_code)]
 #[inline]
-pub fn project(vec: &ColRef<f32>, orthogonal: &MatRef<f32>) -> Col<f32> {
+pub fn project(vec: &[f32], orthogonal: &MatRef<f32>) -> Col<f32> {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
         if is_x86_feature_detected!("avx2") {
             Col::from_fn(orthogonal.ncols(), |i| unsafe {
-                crate::simd::vector_dot_product(vec, &orthogonal.col(i))
+                crate::simd::vector_dot_product(
+                    vec,
+                    orthogonal
+                        .col(i)
+                        .try_as_slice()
+                        .expect("failed to get orthogonal slice"),
+                )
             })
         } else {
-            (vec.transpose() * orthogonal).transpose().to_owned()
+            (row_from_slice(vec) * orthogonal).transpose().to_owned()
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        (vec.transpose() * orthogonal).transpose().to_owned()
+        (row_from_slice(vec) * orthogonal).transpose().to_owned()
     }
 }
 
@@ -253,7 +261,12 @@ pub fn kmeans_nearest_cluster(centroids: &MatRef<f32>, vec: &ColRef<f32>) -> (us
     let mut min_dist = f32::MAX;
     let mut min_label = 0;
     for (j, centroid) in centroids.col_iter().enumerate() {
-        let dist = l2_squared_distance(&centroid, vec);
+        let dist = l2_squared_distance(
+            centroid
+                .try_as_slice()
+                .expect("failed to get centroid slice"),
+            vec.try_as_slice().expect("failed to get vec slice"),
+        );
         if dist < min_dist {
             min_dist = dist;
             min_label = j;

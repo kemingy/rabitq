@@ -3,7 +3,7 @@
 use core::f32;
 use std::path::Path;
 
-use faer::{Col, ColRef, Mat, Row};
+use faer::{Col, Mat, Row};
 use log::debug;
 use serde::{Deserialize, Serialize};
 
@@ -208,7 +208,7 @@ impl RaBitQ {
         let labels = labels
             .into_iter()
             .map(|mut v| {
-                v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                v.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("failed to compare labels"));
                 v.into_iter().map(|(i, _)| i).collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -243,18 +243,23 @@ impl RaBitQ {
     /// Query the topk nearest neighbors for the given query.
     pub fn query(
         &self,
-        query: &ColRef<f32>,
+        query: Vec<f32>,
         probe: usize,
         topk: usize,
         heuristic_rank: bool,
     ) -> Vec<(f32, u32)> {
-        assert_eq!(self.dim as usize, query.nrows());
-        let y_projected = project(query, &self.orthogonal.as_ref());
+        assert_eq!(self.dim as usize, query.len());
+        let y_projected = project(&query, &self.orthogonal.as_ref());
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
         let mut residual = vec![0f32; self.dim as usize];
         for (i, centroid) in self.centroids.col_iter().enumerate() {
-            let dist = l2_squared_distance(&centroid, &y_projected.as_ref());
+            let dist = l2_squared_distance(
+                centroid
+                    .try_as_slice()
+                    .expect("failed to get centroid slice"),
+                y_projected.as_slice(),
+            );
             lists.push((dist, i));
         }
         let length = probe.min(k);

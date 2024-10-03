@@ -5,7 +5,7 @@ use argh::FromArgs;
 use env_logger::Env;
 use log::{debug, info};
 use rabitq::metrics::METRICS;
-use rabitq::utils::{calculate_recall, matrix1d_from_vec, read_vecs};
+use rabitq::utils::{calculate_recall, read_vecs};
 use rabitq::RaBitQ;
 
 #[derive(FromArgs, Debug)]
@@ -65,15 +65,10 @@ fn main() {
     debug!("querying...");
     let mut total_time = 0.0;
     let mut recall = 0.0;
-    for (i, query) in queries.iter().enumerate() {
-        let query_vec = matrix1d_from_vec(query);
+    let total_num = queries.len();
+    for (i, query) in queries.into_iter().enumerate() {
         let start_time = Instant::now();
-        let res = rabitq.query(
-            &query_vec.as_ref(),
-            args.probe,
-            args.topk,
-            args.heuristic_rank,
-        );
+        let res = rabitq.query(query, args.probe, args.topk, args.heuristic_rank);
         total_time += start_time.elapsed().as_secs_f64();
         let ids: Vec<i32> = res.iter().map(|(_, id)| *id as i32).collect();
         recall += calculate_recall(&truth[i], &ids, args.topk);
@@ -81,8 +76,8 @@ fn main() {
 
     info!(
         "QPS: {}, recall: {}",
-        queries.len() as f64 / total_time,
-        recall / queries.len() as f32
+        total_num as f64 / total_time,
+        recall / total_num as f32
     );
     info!("Metrics [{}]", METRICS.to_str());
 }
