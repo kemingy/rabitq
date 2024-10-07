@@ -1,11 +1,13 @@
 //! f32 stored as i32 to make it comparable and faster to compare.
 
+/// Ord32 is a wrapper around i32 that implements Ord and PartialEq.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Ord32(i32);
 
 /// TODO: mark as const fn when it's stable.
 impl Ord32 {
+    /// Create a new Ord32 from an f32.
     #[inline]
     pub fn from_f32(x: f32) -> Self {
         let bits = x.to_bits() as i32;
@@ -14,6 +16,7 @@ impl Ord32 {
         Self(res)
     }
 
+    /// Convert Ord32 to f32.
     #[inline]
     pub fn to_f32(self) -> f32 {
         let bits = self.0;
@@ -37,6 +40,7 @@ impl From<Ord32> for f32 {
     }
 }
 
+/// AlwaysEqual is a wrapper around T that always returns true for PartialEq.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(transparent)]
 pub struct AlwaysEqual<T>(pub T);

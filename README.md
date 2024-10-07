@@ -13,5 +13,6 @@
 - [ ] RaBitQ with fastscan
 - [x] x86_64 SIMD support
 - [ ] integrate with K-means clustering
-- [ ] disk-based RaBitQ (WIP)
-- [ ] HTTP service (WIP)
+- [x] disk-based RaBitQ
+- [x] HTTP service
+- [ ] insert & update & delete

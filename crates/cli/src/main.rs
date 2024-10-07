@@ -9,7 +9,7 @@ use rabitq::utils::{calculate_recall, read_vecs};
 use rabitq::RaBitQ;
 
 #[derive(FromArgs, Debug)]
-/// RaBitQ
+/// RaBitQ CLI args
 struct Args {
     /// base path
     #[argh(option, short = 'b')]

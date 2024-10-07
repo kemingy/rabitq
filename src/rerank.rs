@@ -9,11 +9,15 @@ use crate::metrics::METRICS;
 use crate::ord32::{AlwaysEqual, Ord32};
 use crate::utils::l2_squared_distance;
 
+/// ReRanker enum.
 pub enum ReRanker {
+    /// ReRanker with heap.
     Heap(HeapReRanker),
+    /// ReRanker with heuristic.
     Heuristic(HeuristicReRanker),
 }
 
+/// Create a new re-ranker.
 pub fn new_re_ranker(query: Vec<f32>, topk: usize, heuristic_rank: bool) -> ReRanker {
     if heuristic_rank {
         ReRanker::Heuristic(HeuristicReRanker::new(query, topk))
@@ -23,6 +27,7 @@ pub fn new_re_ranker(query: Vec<f32>, topk: usize, heuristic_rank: bool) -> ReRa
 }
 
 impl ReRanker {
+    /// Rank a batch of items.
     pub fn rank_batch(
         &mut self,
         rough_distances: &[(f32, u32)],
@@ -35,6 +40,7 @@ impl ReRanker {
         }
     }
 
+    /// Get the re-ranked result.
     pub fn get_result(&self) -> Vec<(f32, u32)> {
         match self {
             ReRanker::Heap(re_ranker) => re_ranker.get_result(),
@@ -43,11 +49,15 @@ impl ReRanker {
     }
 }
 
+/// Ranker trait.
 pub trait ReRankerTrait {
+    /// Rank a batch of items.
     fn rank_batch(&mut self, rough_distances: &[(f32, u32)], base: &MatRef<f32>, map_ids: &[u32]);
+    /// Get the re-ranked result.
     fn get_result(&self) -> Vec<(f32, u32)>;
 }
 
+/// Rank with heap.
 #[derive(Debug)]
 pub struct HeapReRanker {
     threshold: f32,
@@ -103,6 +113,7 @@ impl ReRankerTrait for HeapReRanker {
     }
 }
 
+/// Rank in a heuristic way.
 #[derive(Debug)]
 pub struct HeuristicReRanker {
     threshold: f32,

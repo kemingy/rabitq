@@ -1,0 +1,17 @@
+[package]
+name = "service"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+argh = "0.1.12"
+axum = { version = "0.7.7" , default-features = false, features = ["matched-path", "original-uri", "query", "tokio", "http1", "http2", "json"] }
+disk = { path = "../disk" }
+env_logger = "0.11.5"
+log.workspace = true
+rabitq = { version = "0.2.0", path = "../.." }
+serde = "1.0.210"
+tokio = { version = "1.40.0", features = ["rt", "rt-multi-thread", "macros", "signal"] }

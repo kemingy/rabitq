@@ -1,0 +1,16 @@
+[package]
+name = "disk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.89"
+aws-config = "1.5.8"
+aws-sdk-s3 = "1.54.0"
+bytemuck = "1.18.0"
+bytes = "1.7.2"
+faer.workspace = true
+rabitq = { path = "../.." }
+rusqlite = "0.32.1"

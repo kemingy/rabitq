@@ -17,13 +17,18 @@ use crate::utils::{
     vector_binarize_u64, write_matrix, write_vecs,
 };
 
+/// Factor struct to store the metadata for X.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
-struct Factor {
-    factor_ip: f32,
-    factor_ppc: f32,
-    error_bound: f32,
-    center_distance_square: f32,
+pub struct Factor {
+    /// ip
+    pub factor_ip: f32,
+    /// ppc
+    pub factor_ppc: f32,
+    /// error bound
+    pub error_bound: f32,
+    /// (x - c) ** 2
+    pub center_distance_square: f32,
 }
 
 impl Factor {

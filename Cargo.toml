@@ -1,19 +1,32 @@
-[package]
-name = "rabitq"
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2021"
 description = "A Rust implementation of the RaBitQ vector search algorithm."
 license = "AGPL-3.0"
+authors = ["Keming <kemingy94@gmail.com>"]
+
+[workspace.dependencies]
+log = "0.4"
+faer = "0.19"
+
+# root package
+[package]
+name = "rabitq"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 documentation = "https://docs.rs/rabitq"
 repository = "https://github.com/kemingy/rabitq"
 keywords = ["vector-search", "quantization", "binary-dot-product"]
 categories = ["algorithms", "science"]
 
 [dependencies]
-argh = "0.1"
-env_logger = "0.11"
-faer = "0.19"
-log = "0.4"
+faer = { workspace = true }
+log = { workspace = true }
 num-traits = "0.2"
 rand = "0.8"
 rand_distr = "0.4.3"
