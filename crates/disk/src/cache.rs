@@ -72,8 +72,6 @@ impl CachedVector {
         local_path: String,
         s3_bucket: String,
         s3_prefix: String,
-        // _mem_cache_num: u32,
-        // _disk_cache_mb: u32,
     ) -> Self {
         let s3_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
             .load()

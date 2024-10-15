@@ -92,11 +92,13 @@ pub unsafe fn vector_binarize_query(vec: &[u8], binary: &mut [u64]) {
         // since it's not guaranteed that the vec is fully-aligned
         let mut v = _mm256_loadu_si256(ptr);
         ptr = ptr.add(1);
+        // only the lower 4 bits are useful due to the 4-bit scalar quantization
         v = _mm256_slli_epi32(v, 4);
         for j in 0..THETA_LOG_DIM as usize {
+            // extract the MSB of each u8
             let mask = (_mm256_movemask_epi8(v) as u32) as u64;
-            // let shift = if (i / 32) % 2 == 0 { 32 } else { 0 };
-            let shift = ((i >> 5) & 1) << 5;
+            // (opposite version) let shift = if (i / 32) % 2 == 0 { 32 } else { 0 };
+            let shift = i & 32;
             binary[(3 - j) * (length >> 6) + (i >> 6)] |= mask << shift;
             v = _mm256_slli_epi32(v, 1);
         }
@@ -190,7 +192,9 @@ pub unsafe fn scalar_quantize(
     let scalar = _mm256_set1_ps(multiplier);
     let mut sum256 = _mm256_setzero_si256();
     let mask = _mm256_setr_epi8(
-        0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4, 8, 12, -1, -1, -1, -1,
+        0, 4, 8, 12, -1, -1, -1, -1, //
+        -1, -1, -1, -1, -1, -1, -1, -1, //
+        0, 4, 8, 12, -1, -1, -1, -1, //
         -1, -1, -1, -1, -1, -1, -1, -1,
     );
     let length = vec.len();

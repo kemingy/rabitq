@@ -34,7 +34,7 @@ def write_vec(filepath: str, vecs: np.ndarray, vec_type: np.dtype = np.float32):
     """Write vectors to a file. Support `fvecs`, `ivecs` and `bvecs` format."""
     with open(filepath, "wb") as f:
         for vec in vecs:
-            f.write(pack(len(vec), "<i"))
+            f.write(pack("<i", len(vec)))
             f.write(vec.tobytes())
 
 
