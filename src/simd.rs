@@ -20,12 +20,10 @@ pub unsafe fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
     assert_eq!(lhs.len(), rhs.len());
     let mut lhs_ptr = lhs.as_ptr();
     let mut rhs_ptr = rhs.as_ptr();
-    let block_16_num = lhs.len() >> 4;
-    let rest_num = lhs.len() & 0b1111;
     let (mut diff, mut vx, mut vy): (__m256, __m256, __m256);
     let mut sum = _mm256_setzero_ps();
 
-    for _ in 0..block_16_num {
+    for _ in 0..(lhs.len() / 16) {
         vx = _mm256_loadu_ps(lhs_ptr);
         vy = _mm256_loadu_ps(rhs_ptr);
         lhs_ptr = lhs_ptr.add(8);
@@ -41,7 +39,7 @@ pub unsafe fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
         sum = _mm256_fmadd_ps(diff, diff, sum);
     }
 
-    for _ in 0..rest_num / 8 {
+    for _ in 0..((lhs.len() & 0b1111) / 8) {
         vx = _mm256_loadu_ps(lhs_ptr);
         vy = _mm256_loadu_ps(rhs_ptr);
         lhs_ptr = lhs_ptr.add(8);
@@ -65,7 +63,7 @@ pub unsafe fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
     }
 
     let mut res = reduce_f32_256(sum);
-    for _ in 0..rest_num {
+    for _ in 0..(lhs.len() & 0b111) {
         let residual = *lhs_ptr - *rhs_ptr;
         res += residual * residual;
         lhs_ptr = lhs_ptr.add(1);
