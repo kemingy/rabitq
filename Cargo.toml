@@ -23,6 +23,7 @@ documentation = "https://docs.rs/rabitq"
 repository = "https://github.com/kemingy/rabitq"
 keywords = ["vector-search", "quantization", "binary-dot-product"]
 categories = ["algorithms", "science"]
+description.workspace = true
 
 [dependencies]
 faer = { workspace = true }
