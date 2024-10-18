@@ -704,7 +704,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "argh",
  "env_logger",
@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "disk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "rabitq"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "faer",
  "log",
@@ -2356,7 +2356,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "argh",
  "axum",

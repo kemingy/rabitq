@@ -2,7 +2,7 @@
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A Rust implementation of the RaBitQ vector search algorithm."
 license = "AGPL-3.0"
