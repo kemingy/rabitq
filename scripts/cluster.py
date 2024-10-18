@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 
-def default_filter(vec):
+def default_filter(i, vec):
     return True
 
 
@@ -24,10 +24,11 @@ def reservoir_sampling(iterator, k: int):
 
 
 def read_vec_yield(
-    filepath: str, vec_type: np.dtype = np.float32, filter=default_filter
+    filepath: str, vec_type: np.dtype = np.float32, picker=default_filter
 ):
     """Read vectors and yield an iterator."""
     size = np.dtype(vec_type).itemsize
+    i = 0
     with open(filepath, "rb") as f:
         while True:
             try:
@@ -36,11 +37,12 @@ def read_vec_yield(
                     break
                 dim = unpack("<i", buf)[0]
                 vec = np.frombuffer(f.read(dim * size), dtype=vec_type)
-                if filter(vec):
+                if picker(i, vec):
                     yield vec
             except Exception as err:
                 print(err)
                 break
+            i += 1
 
 
 def read_vec(filepath: str, vec_type: np.dtype = np.float32):
@@ -88,31 +90,40 @@ def hierarchical_kmeans(vecs, n_cluster_top, n_cluster_down):
     return np.vstack(centroids)
 
 
+def hierarchical_kmeans_with_sampling(
+    filename, n_cluster_top, n_cluster_down, max_point_per_cluster=256
+):
+    top_points = reservoir_sampling(
+        read_vec_yield(filename), n_cluster_top * max_point_per_cluster
+    )
+    dim = top_points[0].shape[0]
+
+    top_cluster = Kmeans(dim, n_cluster_top)
+    top_cluster.train(top_points)
+
+    labels = np.zeros(1_000_000, dtype=np.uint32)
+    for i, vec in tqdm(enumerate(read_vec_yield(filename)), desc="assign labels"):
+        _, label = top_cluster.assign(vec.reshape((1, -1)))
+        labels[i] = label[0]
+
+    def filter_label(label, i, vec):
+        return labels[i] == label
+
+    centroids = []
+    for i in tqdm(range(n_cluster_top), desc="down clustering"):
+        down_points = reservoir_sampling(
+            read_vec_yield(filename, picker=partial(filter_label, i)),
+            n_cluster_down * max_point_per_cluster,
+        )
+        down_cluster = Kmeans(dim, n_cluster_down)
+        down_cluster.train(down_points)
+        centroids.append(down_cluster.centroids)
+
+    write_vec(f"centroids_{n_cluster_top}_{n_cluster_down}.fvecs", np.vstack(centroids))
+
+
 if __name__ == "__main__":
     filename = argv[1]
     top_n = int(argv[2])
     down_n = int(argv[3])
-    max_point_per_cluster = 256
-    top_points = reservoir_sampling(
-        read_vec_yield(filename), top_n * max_point_per_cluster
-    )
-    dim = top_points[0].shape[0]
-
-    top_cluster = Kmeans(dim, top_n)
-    top_cluster.train(top_points)
-
-    def filter_label(label, vec):
-        _, label = top_cluster.assign(vec.reshape((1, -1)))
-        return label[0] == label
-
-    centroids = []
-    for i in tqdm(range(top_n)):
-        down_points = reservoir_sampling(
-            read_vec_yield(filename, filter=partial(filter_label, i)),
-            down_n * max_point_per_cluster,
-        )
-        down_cluster = Kmeans(dim, down_n)
-        down_cluster.train(down_points)
-        centroids.append(down_cluster.centroids)
-
-    write_vec(f"centroids_{top_n}_{down_n}.fvecs", np.vstack(centroids))
+    hierarchical_kmeans_with_sampling(filename, top_n, down_n)
