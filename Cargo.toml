@@ -46,5 +46,5 @@ panic = "abort"
 inherits = "release"
 debug = true
 lto = false
-codegen-units = 16
+codegen-units = 1  # this is important when `cli` is in another crates
 panic = "unwind"

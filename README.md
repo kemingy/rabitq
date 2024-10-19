@@ -16,3 +16,4 @@
 - [x] disk-based RaBitQ
 - [x] HTTP service
 - [ ] insert & update & delete
+- [ ] cosine similarity distance

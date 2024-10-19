@@ -7,10 +7,6 @@ import numpy as np
 from tqdm import tqdm
 
 
-def default_filter(i, vec):
-    return True
-
-
 def reservoir_sampling(iterator, k: int):
     """Reservoir sampling from an iterator."""
     res = []
@@ -21,6 +17,10 @@ def reservoir_sampling(iterator, k: int):
         if j < k:
             res[j] = vec
     return res
+
+
+def default_filter(i, vec):
+    return True
 
 
 def read_vec_yield(
@@ -45,28 +45,6 @@ def read_vec_yield(
             i += 1
 
 
-def read_vec(filepath: str, vec_type: np.dtype = np.float32):
-    """Read vectors from a file. Support `fvecs`, `ivecs` and `bvecs` format.
-    Args:
-        filepath: The path of the file.
-        vec_type: The type of the vectors.
-    """
-    size = np.dtype(vec_type).itemsize
-    with open(filepath, "rb") as f:
-        vecs = []
-        while True:
-            try:
-                buf = f.read(4)
-                if len(buf) == 0:
-                    break
-                dim = unpack("<i", buf)[0]
-                vecs.append(np.frombuffer(f.read(dim * size), dtype=vec_type))
-            except Exception as err:
-                print(err)
-                break
-    return np.array(vecs)
-
-
 def write_vec(filepath: str, vecs: np.ndarray, vec_type: np.dtype = np.float32):
     """Write vectors to a file. Support `fvecs`, `ivecs` and `bvecs` format."""
     with open(filepath, "wb") as f:
@@ -75,8 +53,16 @@ def write_vec(filepath: str, vecs: np.ndarray, vec_type: np.dtype = np.float32):
             f.write(vec.tobytes())
 
 
-def hierarchical_kmeans(vecs, n_cluster_top, n_cluster_down):
-    dim = vecs.shape[1]
+def inspect_vecs_file_dim(filename: str) -> int:
+    with open(filename, "rb") as f:
+        buf = f.read(4)
+        dim = unpack("<i", buf)[0]
+        return dim
+
+
+def hierarchical_kmeans(filename: str, n_cluster_top: int, n_cluster_down: int):
+    dim = inspect_vecs_file_dim(filename)
+    vecs = np.fromiter(read_vec_yield(filename), dtype=np.dtype((float, dim)))
     top = Kmeans(dim, n_cluster_top)
     top.train(vecs)
     _, labels = top.assign(vecs)
