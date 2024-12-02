@@ -66,7 +66,7 @@ fn main() {
     let mut total_time = 0.0;
     let mut recall = 0.0;
     let total_num = queries.len();
-    for (i, query) in queries.into_iter().enumerate() {
+    for (i, query) in queries.iter().enumerate() {
         let start_time = Instant::now();
         let res = rabitq.query(query, args.probe, args.topk, args.heuristic_rank);
         total_time += start_time.elapsed().as_secs_f64();
