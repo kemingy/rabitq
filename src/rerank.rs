@@ -10,15 +10,15 @@ use crate::ord32::{AlwaysEqual, Ord32};
 use crate::utils::l2_squared_distance;
 
 /// ReRanker enum.
-pub enum ReRanker {
+pub enum ReRanker<'a> {
     /// ReRanker with heap.
-    Heap(HeapReRanker),
+    Heap(HeapReRanker<'a>),
     /// ReRanker with heuristic.
-    Heuristic(HeuristicReRanker),
+    Heuristic(HeuristicReRanker<'a>),
 }
 
 /// Create a new re-ranker.
-pub fn new_re_ranker(query: Vec<f32>, topk: usize, heuristic_rank: bool) -> ReRanker {
+pub fn new_re_ranker(query: &[f32], topk: usize, heuristic_rank: bool) -> ReRanker {
     if heuristic_rank {
         ReRanker::Heuristic(HeuristicReRanker::new(query, topk))
     } else {
@@ -26,7 +26,7 @@ pub fn new_re_ranker(query: Vec<f32>, topk: usize, heuristic_rank: bool) -> ReRa
     }
 }
 
-impl ReRanker {
+impl<'a> ReRanker<'a> {
     /// Rank a batch of items.
     pub fn rank_batch(
         &mut self,
@@ -59,15 +59,15 @@ pub trait ReRankerTrait {
 
 /// Rank with heap.
 #[derive(Debug)]
-pub struct HeapReRanker {
+pub struct HeapReRanker<'a> {
     threshold: f32,
     topk: usize,
     heap: BinaryHeap<(Ord32, AlwaysEqual<u32>)>,
-    query: Vec<f32>,
+    query: &'a [f32],
 }
 
-impl HeapReRanker {
-    fn new(query: Vec<f32>, topk: usize) -> Self {
+impl<'a> HeapReRanker<'a> {
+    fn new(query: &'a [f32], topk: usize) -> Self {
         Self {
             threshold: f32::MAX,
             query,
@@ -77,7 +77,7 @@ impl HeapReRanker {
     }
 }
 
-impl ReRankerTrait for HeapReRanker {
+impl ReRankerTrait for HeapReRanker<'_> {
     fn rank_batch(&mut self, rough_distances: &[(f32, u32)], base: &MatRef<f32>, map_ids: &[u32]) {
         let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
@@ -86,7 +86,7 @@ impl ReRankerTrait for HeapReRanker {
                     base.col(u as usize)
                         .try_as_slice()
                         .expect("failed to get base slice"),
-                    &self.query,
+                    self.query,
                 );
                 precise += 1;
                 if accurate < self.threshold {
@@ -115,18 +115,18 @@ impl ReRankerTrait for HeapReRanker {
 
 /// Rank in a heuristic way.
 #[derive(Debug)]
-pub struct HeuristicReRanker {
+pub struct HeuristicReRanker<'a> {
     threshold: f32,
     recent_max_accurate: f32,
     topk: usize,
     array: Vec<(f32, u32)>,
-    query: Vec<f32>,
+    query: &'a [f32],
     count: usize,
     window_size: usize,
 }
 
-impl HeuristicReRanker {
-    fn new(query: Vec<f32>, topk: usize) -> Self {
+impl<'a> HeuristicReRanker<'a> {
+    fn new(query: &'a [f32], topk: usize) -> Self {
         Self {
             threshold: f32::MAX,
             recent_max_accurate: f32::MIN,
@@ -139,7 +139,7 @@ impl HeuristicReRanker {
     }
 }
 
-impl ReRankerTrait for HeuristicReRanker {
+impl ReRankerTrait for HeuristicReRanker<'_> {
     fn rank_batch(&mut self, rough_distances: &[(f32, u32)], base: &MatRef<f32>, map_ids: &[u32]) {
         let mut precise = 0;
         for &(rough, u) in rough_distances.iter() {
@@ -148,7 +148,7 @@ impl ReRankerTrait for HeuristicReRanker {
                     base.col(u as usize)
                         .try_as_slice()
                         .expect("failed to get base slice"),
-                    &self.query,
+                    self.query,
                 );
                 precise += 1;
                 if accurate < self.threshold {

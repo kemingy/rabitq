@@ -106,6 +106,7 @@ impl RaBitQ {
             .collect();
 
         let dim = orthogonal.nrows();
+        assert!(dim % 64 == 0);
         let base = matrix_from_fvecs(&path.join("base.fvecs"))
             .transpose()
             .to_owned();
@@ -156,12 +157,30 @@ impl RaBitQ {
 
     /// Build the RaBitQ model from the base and centroids files.
     pub fn from_path(base_path: &Path, centroid_path: &Path) -> Self {
-        let base = matrix_from_fvecs(base_path);
-        let (n, dim) = base.shape();
-        let centroids = matrix_from_fvecs(centroid_path);
-        let k = centroids.shape().0;
+        let mut base = matrix_from_fvecs(base_path);
+        let n = base.nrows();
+        let mut dim = base.ncols();
+        let mut centroids = matrix_from_fvecs(centroid_path);
+        let k = centroids.nrows();
+        assert!(dim == centroids.ncols());
+
+        // padding to 64
+        if dim % 64 != 0 {
+            let dim_pad = dim.div_ceil(64) * 64;
+            base = Mat::from_fn(n, dim_pad, |i, j| match j < dim {
+                true => base.read(i, j),
+                false => 0.0,
+            });
+            centroids = Mat::from_fn(k, dim_pad, |i, j| match j < dim {
+                true => centroids.read(i, j),
+                false => 0.0,
+            });
+            dim = dim_pad;
+        }
+
         debug!("n: {}, dim: {}, k: {}", n, dim, k);
         let orthogonal = gen_random_qr_orthogonal(dim);
+        // let orthogonal = Mat::identity(dim, dim);
         let rand_bias = gen_random_bias(dim);
 
         // projection
@@ -248,16 +267,21 @@ impl RaBitQ {
     /// Query the topk nearest neighbors for the given query.
     pub fn query(
         &self,
-        query: Vec<f32>,
+        query: &[f32],
         probe: usize,
         topk: usize,
         heuristic_rank: bool,
     ) -> Vec<(f32, u32)> {
-        assert_eq!(self.dim as usize, query.len());
-        let y_projected = project(&query, &self.orthogonal.as_ref());
+        assert_eq!(self.dim as usize, query.len().div_ceil(64) * 64);
+        // padding
+        let mut query_vec = query.to_vec();
+        if query.len() < self.dim as usize {
+            query_vec.extend_from_slice(&vec![0.0; self.dim as usize - query.len()]);
+        }
+
+        let y_projected = project(&query_vec, &self.orthogonal.as_ref());
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
-        let mut residual = vec![0f32; self.dim as usize];
         for (i, centroid) in self.centroids.col_iter().enumerate() {
             let dist = l2_squared_distance(
                 centroid
@@ -272,10 +296,11 @@ impl RaBitQ {
         lists.truncate(length);
         lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-        let mut re_ranker = new_re_ranker(query, topk, heuristic_rank);
+        let mut re_ranker = new_re_ranker(&query_vec, topk, heuristic_rank);
+        let mut residual = vec![0f32; self.dim as usize];
+        let mut quantized = vec![0u8; (self.dim as usize).div_ceil(64) * 64];
         let mut rough_distances = Vec::new();
-        let mut quantized = vec![0u8; self.dim as usize];
-        let mut binary_vec = vec![0u64; self.dim as usize * THETA_LOG_DIM as usize / 64];
+        let mut binary_vec = vec![0u64; (self.dim).div_ceil(64) as usize * THETA_LOG_DIM as usize];
         for &(dist, i) in lists[..length].iter() {
             let (lower_bound, upper_bound) =
                 min_max_residual(&mut residual, &y_projected.as_ref(), &self.centroids.col(i));

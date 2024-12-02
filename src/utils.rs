@@ -12,7 +12,7 @@ use rand_distr::StandardNormal;
 
 use crate::consts::THETA_LOG_DIM;
 
-/// Generate a random orthogonal matrix from QR decomposition.
+/// Generate a random orthogonal matrix from the standard normal distribution QR decomposition.
 pub fn gen_random_qr_orthogonal(dim: usize) -> Mat<f32> {
     let mut rng = rand::thread_rng();
     let random: Mat<f32> = Mat::from_fn(dim, dim, |_, _| StandardNormal.sample(&mut rng));
@@ -51,7 +51,7 @@ pub fn matrix_from_fvecs(path: &Path) -> Mat<f32> {
 /// Convert the vector to binary format and store in a u64 vector.
 #[inline]
 pub fn vector_binarize_u64(vec: &ColRef<f32>) -> Vec<u64> {
-    let mut binary = vec![0u64; (vec.nrows() + 63) / 64];
+    let mut binary = vec![0u64; vec.nrows().div_ceil(64)];
     for (i, &v) in vec.iter().enumerate() {
         if v > 0.0 {
             binary[i / 64] |= 1 << (i % 64);
@@ -199,7 +199,8 @@ fn scalar_quantize_raw(
     multiplier: f32,
 ) -> u32 {
     let mut sum = 0u32;
-    for i in 0..quantized.len() {
+    assert!(vec.len() <= quantized.len());
+    for i in 0..vec.len() {
         let q = ((vec[i] - lower_bound) * multiplier + bias[i]) as u8;
         quantized[i] = q;
         sum += q as u32;

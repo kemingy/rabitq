@@ -17,3 +17,4 @@
 - [x] HTTP service
 - [ ] insert & update & delete
 - [ ] cosine similarity distance
+- [ ] early stop
