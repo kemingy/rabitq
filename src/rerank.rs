@@ -26,7 +26,7 @@ pub fn new_re_ranker(query: &[f32], topk: usize, heuristic_rank: bool) -> ReRank
     }
 }
 
-impl<'a> ReRanker<'a> {
+impl ReRanker<'_> {
     /// Rank a batch of items.
     pub fn rank_batch(
         &mut self,
