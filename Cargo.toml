@@ -10,7 +10,7 @@ authors = ["Keming <kemingy94@gmail.com>"]
 
 [workspace.dependencies]
 log = "0.4"
-faer = "0.19"
+faer = { version = "0.19", default-features = false, features = ["std", "serde"] }
 
 # root package
 [package]
