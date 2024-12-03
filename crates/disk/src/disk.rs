@@ -18,15 +18,15 @@ use crate::cache::CachedVector;
 
 /// Rank with cached raw vectors.
 #[derive(Debug)]
-pub struct CacheReRanker {
+pub struct CacheReRanker<'a> {
     threshold: f32,
     topk: usize,
     heap: BinaryHeap<(Ord32, AlwaysEqual<u32>)>,
-    query: Vec<f32>,
+    query: &'a [f32],
 }
 
-impl CacheReRanker {
-    fn new(query: Vec<f32>, topk: usize) -> Self {
+impl<'a> CacheReRanker<'a> {
+    fn new(query: &'a [f32], topk: usize) -> Self {
         Self {
             threshold: f32::MAX,
             query,
@@ -45,7 +45,7 @@ impl CacheReRanker {
         for &(rough, u) in rough_distances.iter() {
             if rough < self.threshold {
                 let accurate = cache
-                    .get_query_vec_distance(&self.query, u)
+                    .get_query_vec_distance(self.query, u)
                     .await
                     .expect("failed to get distance");
                 precise += 1;
@@ -142,11 +142,16 @@ impl DiskRaBitQ {
 
     /// Query the topk nearest neighbors for the given query asynchronously.
     pub async fn query(&self, query: Vec<f32>, probe: usize, topk: usize) -> Vec<(f32, u32)> {
-        assert_eq!(self.dim as usize, query.len());
-        let y_projected = project(&query, &self.orthogonal.as_ref());
+        assert_eq!(self.dim as usize, query.len().div_ceil(64) * 64);
+        // padding
+        let mut query_vec = query.to_vec();
+        if query.len() < self.dim as usize {
+            query_vec.extend_from_slice(&vec![0.0; self.dim as usize - query.len()]);
+        }
+
+        let y_projected = project(&query_vec, &self.orthogonal.as_ref());
         let k = self.centroids.shape().1;
         let mut lists = Vec::with_capacity(k);
-        let mut residual = vec![0f32; self.dim as usize];
         for (i, centroid) in self.centroids.col_iter().enumerate() {
             let dist = l2_squared_distance(
                 centroid
@@ -161,10 +166,11 @@ impl DiskRaBitQ {
         lists.truncate(length);
         lists.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-        let mut re_ranker = CacheReRanker::new(query, topk);
+        let mut re_ranker = CacheReRanker::new(&query_vec, topk);
+        let mut residual = vec![0f32; self.dim as usize];
+        let mut quantized = vec![0u8; (self.dim as usize).div_ceil(64) * 64];
         let mut rough_distances = Vec::new();
-        let mut quantized = vec![0u8; self.dim as usize];
-        let mut binary_vec = vec![0u64; self.dim as usize * THETA_LOG_DIM as usize / 64];
+        let mut binary_vec = vec![0u64; self.dim.div_ceil(64) as usize * THETA_LOG_DIM as usize];
         for &(dist, i) in lists[..length].iter() {
             let (lower_bound, upper_bound) =
                 min_max_residual(&mut residual, &y_projected.as_ref(), &self.centroids.col(i));

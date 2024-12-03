@@ -18,18 +18,15 @@ mod args;
 async fn shutdown_signal() {
     let mut interrupt = signal(SignalKind::interrupt()).unwrap();
     let mut terminate = signal(SignalKind::terminate()).unwrap();
-    loop {
-        tokio::select! {
-            _ = interrupt.recv() => {
-                info!("Received interrupt signal");
-                break;
-            }
-            _ = terminate.recv() => {
-                info!("Received terminate signal");
-                break;
-            }
-        };
-    }
+    tokio::select! {
+        _ = interrupt.recv() => {
+            info!("Received interrupt signal");
+        }
+        _ = terminate.recv() => {
+            info!("Received terminate signal");
+        }
+    };
+    info!("Shutting down");
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -75,7 +72,7 @@ async fn main() {
 
     let config: args::Args = argh::from_env();
     let model_path = Path::new(&config.dir);
-    download_meta_from_s3(&config.bucket, &config.key, &model_path)
+    download_meta_from_s3(&config.bucket, &config.key, model_path)
         .await
         .expect("failed to download meta");
     let rabitq =
