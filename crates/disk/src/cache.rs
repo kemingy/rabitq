@@ -79,7 +79,7 @@ impl CachedVector {
         let s3_client = Arc::new(Client::new(&s3_config));
         let num_per_block = BLOCK_BYTE_LIMIT / (4 * (dim + 1));
         let total_num = num;
-        let total_block = (total_num + num_per_block - 1) / num_per_block;
+        let total_block = total_num.div_ceil(num_per_block);
         let sqlite_conn = Connection::open(Path::new(&local_path)).expect("failed to open sqlite");
         sqlite_conn
             .execute(
