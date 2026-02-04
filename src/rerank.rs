@@ -18,7 +18,7 @@ pub enum ReRanker<'a> {
 }
 
 /// Create a new re-ranker.
-pub fn new_re_ranker(query: &[f32], topk: usize, heuristic_rank: bool) -> ReRanker {
+pub fn new_re_ranker(query: &[f32], topk: usize, heuristic_rank: bool) -> ReRanker<'_> {
     if heuristic_rank {
         ReRanker::Heuristic(HeuristicReRanker::new(query, topk))
     } else {
