@@ -106,7 +106,7 @@ impl RaBitQ {
             .collect();
 
         let dim = orthogonal.nrows();
-        assert!(dim % 64 == 0);
+        assert!(dim.is_multiple_of(64));
         let base = matrix_from_fvecs(&path.join("base.fvecs"))
             .transpose()
             .to_owned();
@@ -165,7 +165,7 @@ impl RaBitQ {
         assert!(dim == centroids.ncols());
 
         // padding to 64
-        if dim % 64 != 0 {
+        if !dim.is_multiple_of(64) {
             let dim_pad = dim.div_ceil(64) * 64;
             base = Mat::from_fn(n, dim_pad, |i, j| match j < dim {
                 true => base.read(i, j),
