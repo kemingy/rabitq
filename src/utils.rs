@@ -147,7 +147,7 @@ pub fn l2_squared_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
-        (lhs - rhs).squared_norm_l2()
+        (row_from_slice(lhs) - row_from_slice(rhs)).squared_norm_l2()
     }
 }
 

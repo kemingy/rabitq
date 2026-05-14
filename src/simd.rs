@@ -1,7 +1,5 @@
 //! Accelerate with SIMD.
 
-use crate::consts::THETA_LOG_DIM;
-
 /// Compute the squared Euclidean distance between two vectors.
 /// Code refer to https://github.com/nmslib/hnswlib/blob/master/hnswlib/space_l2.h
 ///
